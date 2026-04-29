@@ -169,6 +169,16 @@ type ContentType =
 
 export class MessageBuilder {
   private content?: ContentType;
+  private replyTo?: { id: string; senderJid: string };
+
+  setReply(id: string, senderJid: string): this {
+    this.replyTo = { id, senderJid };
+    return this;
+  }
+
+  getReply() {
+    return this.replyTo;
+  }
 
   setText(text: string): this {
     this.content = { type: "text", text };
@@ -379,7 +389,10 @@ export function encodeRevokeMessage(messageId: string, fromMe: boolean): Buffer 
  * Returns (messageApp bytes, frankingKey, frankingTag).
  * Reference: sendfb.go SendFBMessage()
  */
-export function encodeMessageApplication(consumerAppBytes: Buffer): {
+export function encodeMessageApplication(
+  consumerAppBytes: Buffer,
+  replyTo?: { id: string; senderJid: string }
+): {
   messageApp: Buffer;
   frankingKey: Buffer;
   frankingTag: Buffer;
@@ -399,11 +412,20 @@ export function encodeMessageApplication(consumerAppBytes: Buffer): {
   // MessageApplication_Payload { subProtocol = payloadSubProto }
   const appPayload = new ProtoWriter().bytes(1, payloadSubProto).build();
 
-  // MessageApplication_Metadata { frankingKey, frankingVersion=0 }
-  const metadata = new ProtoWriter()
-    .varint(1, 0)          // frankingVersion
-    .bytes(2, frankingKey) // frankingKey
-    .build();
+  // MessageApplication_Metadata { frankingKey=8, frankingVersion=9, quotedMessage=10 }
+  let metadataWriter = new ProtoWriter()
+    .bytes(8, frankingKey)
+    .varint(9, 0); // frankingVersion
+
+  if (replyTo) {
+    const quoted = new ProtoWriter()
+      .string(1, replyTo.id)
+      .string(2, replyTo.senderJid)
+      .build();
+    metadataWriter = metadataWriter.bytes(10, quoted);
+  }
+
+  const metadata = metadataWriter.build();
 
   // MessageApplication { payload, metadata }
   const messageApp = new ProtoWriter()

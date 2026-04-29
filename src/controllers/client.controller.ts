@@ -368,7 +368,7 @@ export class ClientController {
   public async sendMessage(input: SendMessageInput): Promise<Record<string, unknown>> {
     if (this.e2eeConnected && (/^\d+$/.test(input.threadId) || input.threadId.includes("@msgr"))) {
       try {
-        await this.sendE2EEText(input.threadId, input.text);
+        await this.sendE2EEText(input.threadId, input.text, input.replyToMessageId);
         return { messageId: `e2ee-${now()}`, timestampMs: now() };
       } catch (err) {
         logger.warn("ClientController", "E2EE send failed, fallback:", (err as Error).message);
@@ -377,13 +377,20 @@ export class ClientController {
     return this.messagingService.sendText(this.requireApi(), input);
   }
 
-  public async sendE2EEText(threadId: string, text: string): Promise<void> {
+  public async sendE2EEText(threadId: string, text: string, replyToMessageId?: string): Promise<void> {
     if (!this.e2eeSocket) throw new Error("E2EE not connected");
     const e2eeClient = this.e2eeService.getClient();
     const selfJid = this.userId + ".0@msgr";
     const toJid = threadId.includes("@") ? threadId : (threadId.includes(".") ? threadId + "@msgr" : threadId + ".0@msgr");
 
-    const result = await e2eeClient.encryptDMText({ toJid, selfJid, text, isGroup: false });
+    const result = await e2eeClient.encryptDMText({
+      toJid,
+      selfJid,
+      text,
+      isGroup: false,
+      replyToId: replyToMessageId,
+      replyToSenderJid: replyToMessageId ? toJid : undefined // Simple heuristic: assume reply is to the same thread
+    });
     const messageId = String(BigInt(Math.floor(Math.random() * 1e15)));
     const msgNode: Node = {
       tag: "message",

@@ -64,8 +64,11 @@ export class E2EEHandler {
       const transport = decodeMessageTransport(decrypted);
       const appPayload = transport?.payload?.applicationPayload?.payload;
 
+      logger.debug("E2EEHandler", "Decrypted transport:", JSON.stringify(transport, null, 2));
+
       if (appPayload) {
         const messageApp = decodeMessageApplication(appPayload);
+        logger.debug("E2EEHandler", "Decrypted messageApp:", JSON.stringify(messageApp, null, 2));
         const subProtocol = messageApp.payload?.subProtocol;
         let appMessage: any = null;
         let isArmadillo = false;
@@ -78,7 +81,7 @@ export class E2EEHandler {
         }
 
         if (appMessage) {
-          const normalized = this.normalizeE2EEMessage(appMessage, senderJid, node.attrs.id);
+          const normalized = this.normalizeE2EEMessage(appMessage, senderJid, node.attrs.id, messageApp);
           if (normalized) {
             normalized.isArmadillo = isArmadillo;
             this.eventMapper.emitMappedEvent({ type: "e2ee_message", data: normalized });
@@ -227,7 +230,7 @@ export class E2EEHandler {
     await socket.sendFrame(marshal(cleanIQ));
   }
 
-  private normalizeE2EEMessage(appMessage: any, senderJid: string, messageId: string): any {
+  private normalizeE2EEMessage(appMessage: any, senderJid: string, messageId: string, messageApp?: any): any {
     const payload = appMessage?.payload;
     if (!payload) return null;
     const senderId = senderJid.split(".")[0];
@@ -238,12 +241,15 @@ export class E2EEHandler {
       threadId: senderId,
       messageId: messageId,
       timestampMs: now(),
+      replyToId: messageApp?.metadata?.quotedMessage?.stanzaID,
+      replyToSenderJid: messageApp?.metadata?.quotedMessage?.remoteJID || messageApp?.metadata?.quotedMessage?.participant,
     };
 
     const content = payload.content;
     if (!content) return null;
 
     if (content.messageText) return { ...common, type: "text", text: content.messageText.text };
+    if (content.extendedTextMessage) return { ...common, type: "text", text: content.extendedTextMessage.text?.text, extended: content.extendedTextMessage };
     if (content.imageMessage) return { ...common, type: "image", media: content.imageMessage };
     if (content.videoMessage) return { ...common, type: "video", media: content.videoMessage };
     if (content.audioMessage) return { ...common, type: "audio", media: content.audioMessage };
@@ -265,6 +271,15 @@ export class E2EEHandler {
         type: "edit",
         text: content.editMessage.message?.text || content.editMessage.messageText?.text,
         targetId: content.editMessage.key?.ID || content.editMessage.targetMessageID
+      };
+    }
+
+    if (content.revokeMessage) {
+      return {
+        ...common,
+        type: "revoke",
+        targetId: content.revokeMessage.key?.ID || content.revokeMessage.targetMessageID,
+        fromMe: content.revokeMessage.key?.fromMe
       };
     }
 

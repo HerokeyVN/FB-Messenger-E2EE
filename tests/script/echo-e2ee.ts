@@ -36,7 +36,7 @@ async function main() {
     process.exit(1);
   }
 
-  console.log("[echo-e2ee`, `Initializing FBClient...");
+  console.log("echo-e2ee", `Initializing FBClient...`);
   const client = new FBClient({
     appStatePath: APPSTATE_PATH,
     sessionStorePath: SESSION_PATH,
@@ -50,7 +50,8 @@ async function main() {
     if (event.type === "e2ee_message") {
       const msg = event.data;
 
-      console.log(`echo-e2ee`, `Echoing message to ${msg.threadId}: "${msg.text}"`);
+      console.log(event);
+      // console.log(`echo-e2ee`, `Echoing message to ${msg.threadId}: "${msg.text}"`);
     }
   });
 

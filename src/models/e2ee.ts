@@ -119,6 +119,8 @@ export interface E2EESendTextOptions {
   isGroup: boolean;
   /** Own JID - required for all sends (self address in Signal protocol) */
   selfJid: string;
+  replyToId?: string;
+  replyToSenderJid?: string;
 }
 
 export interface E2EESendTextResult {

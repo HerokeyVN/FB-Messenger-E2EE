@@ -204,7 +204,7 @@ export async function decryptGroup(
   let buf = u8(ciphertext);
 
   // If it's a Facebook-style message (version 0x33, usually lacking 64-byte signature)
-  if (buf[0] === 0x33 && buf.length < 512) {
+  if (buf[0] === 0x33) {
     try {
       SenderKeyMessage.deserialize(buf);
       // Already a valid Signal message

@@ -98,8 +98,12 @@ export class E2EEClient {
    * Returns the plaintext MessageTransport bytes and frankingTag.
    */
   async encryptDMText(opts: E2EESendTextOptions): Promise<Extract<EncryptionResult, { type: "dm" }>> {
-    const consumerApp = new MessageBuilder().setText(opts.text).build();
-    const { messageApp, frankingTag } = encodeMessageApplication(consumerApp);
+    const builder = new MessageBuilder().setText(opts.text);
+    if (opts.replyToId && opts.replyToSenderJid) {
+      builder.setReply(opts.replyToId, opts.replyToSenderJid);
+    }
+    const consumerApp = builder.build();
+    const { messageApp, frankingTag } = encodeMessageApplication(consumerApp, builder.getReply());
     const transport = encodeMessageTransport({ messageApp });
 
     const recipientAddr = jidToAddress(opts.toJid);
@@ -118,9 +122,15 @@ export class E2EEClient {
     groupJid: string,
     selfJid: string,
     text: string,
+    replyToId?: string,
+    replyToSenderJid?: string
   ): Promise<Extract<EncryptionResult, { type: "group" }>> {
-    const consumerApp = new MessageBuilder().setText(text).build();
-    const { messageApp, frankingTag } = encodeMessageApplication(consumerApp);
+    const builder = new MessageBuilder().setText(text);
+    if (replyToId && replyToSenderJid) {
+      builder.setReply(replyToId, replyToSenderJid);
+    }
+    const consumerApp = builder.build();
+    const { messageApp, frankingTag } = encodeMessageApplication(consumerApp, builder.getReply());
 
     const { skdm, distributionId } = await createSenderKeyDistributionMessage(this.store, groupJid, selfJid);
 

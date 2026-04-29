@@ -26,6 +26,7 @@ import {
 } from "node:crypto";
 import { inflateSync } from "node:zlib";
 import type { HandshakeResult, NoiseSocket, RawWebSocket } from "../models/e2ee.ts";
+import { logger } from "../utils/logger.ts";
 export type { HandshakeResult, NoiseSocket, RawWebSocket };
 
 // X25519 Helpers using node:crypto
@@ -104,7 +105,7 @@ class NoiseHandshakeState {
     this.ck = expanded.subarray(0, 32);
     this.k = expanded.subarray(32, 64);
     this.n = 0;
-    // console.log(`[noise-handshake] mixKey -> ck=${this.ck.toString("hex").slice(0, 8)} k=${this.k.toString("hex").slice(0, 8)}`);
+    // logger.debug("noise-handshake", `mixKey -> ck=${this.ck.toString("hex").slice(0, 8)} k=${this.k.toString("hex").slice(0, 8)}`);
   }
 
   mixSharedSecretIntoKey(privKey: Buffer, pubKey: Buffer): void {
@@ -137,10 +138,10 @@ class NoiseHandshakeState {
       this.mixHash(ciphertext);
       return plain;
     } catch (err) {
-      console.error(`[CipherState] Decrypt error at n=${this.n - 1}:`, err);
-      console.error(`  - Key: ${this.k.toString('hex')}`);
-      console.error(`  - Nonce: ${nonce.toString('hex')}`);
-      console.error(`  - AAD: ${this.h.toString('hex')}`);
+      logger.error("CipherState", `Decrypt error at n=${this.n - 1}:`, err);
+      logger.error("CipherState", `  - Key: ${this.k.toString('hex')}`);
+      logger.error("CipherState", `  - Nonce: ${nonce.toString('hex')}`);
+      logger.error("CipherState", `  - AAD: ${this.h.toString('hex')}`);
       throw err;
     }
   }
@@ -204,7 +205,7 @@ class EncryptedFrameSocket implements NoiseSocket {
     header.writeUIntBE(enc.length, 0, 3);
 
     const fullFrame = Buffer.concat([header, enc]);
-    console.log(`[noise-handshake] Sending frame (${fullFrame.length} bytes): ${fullFrame.toString("hex").slice(0, 32)}...`);
+    logger.debug("noise-handshake", `Sending frame (${fullFrame.length} bytes): ${fullFrame.toString("hex").slice(0, 32)}...`);
     return fullFrame;
   }
 
@@ -232,15 +233,15 @@ class EncryptedFrameSocket implements NoiseSocket {
       throw new Error("Socket closed while reading frame header");
     }
     const len = header.readUIntBE(0, 3);
-    console.log(`[FacebookE2EESocket] RAW frame header: ${header.toString('hex')} (len=${len})`);
+    logger.debug("FacebookE2EESocket", `RAW frame header: ${header.toString('hex')} (len=${len})`);
 
     const payload = await this.ws.readRaw(len);
     try {
       const decrypted = this.decryptFrame(payload);
-      console.log(`[FacebookE2EESocket] Decrypt successful, result length: ${decrypted.length}`);
+      logger.debug("FacebookE2EESocket", `Decrypt successful, result length: ${decrypted.length}`);
       return decrypted;
     } catch (err) {
-      console.error(`[FacebookE2EESocket] Decrypt FAILED:`, err);
+      logger.error("FacebookE2EESocket", "Decrypt FAILED:", err);
       throw err;
     }
   }
@@ -269,8 +270,8 @@ export async function doHandshake(
   const eph = generateX25519();
   const ephPriv = eph.priv;
   const ephPub = eph.pub;
-  console.log(`[debug] ClientEphPriv: ${ephPriv.toString('hex')}`);
-  console.log(`[debug] ClientEphPub:  ${ephPub.toString('hex')}`);
+  logger.debug("debug", `ClientEphPriv: ${ephPriv.toString('hex')}`);
+  logger.debug("debug", `ClientEphPub:  ${ephPub.toString('hex')}`);
 
   state.mixHash(ephPub);
 
@@ -285,18 +286,18 @@ export async function doHandshake(
 
   const serverEphPub = Buffer.from(serverHello.ephemeral);
   const serverStaticEnc = Buffer.from(serverHello.static);
-  console.log(`[debug] ServerStaticEnc: ${serverStaticEnc.toString('hex')}`);
+  logger.debug("debug", `ServerStaticEnc: ${serverStaticEnc.toString('hex')}`);
   const certEnc = Buffer.from(serverHello.payload);
 
-  console.log(`[noise-handshake] Eph: ${serverEphPub.length}, StaticEnc: ${serverStaticEnc.length}, CertEnc: ${certEnc.length}`);
+  logger.debug("noise-handshake", `Eph: ${serverEphPub.length}, StaticEnc: ${serverStaticEnc.length}, CertEnc: ${certEnc.length}`);
 
-  console.log(`[debug] ServerEphPub:  ${serverEphPub.toString('hex')}`);
+  logger.debug("debug", `ServerEphPub:  ${serverEphPub.toString('hex')}`);
   state.mixHash(serverEphPub);
   state.mixSharedSecretIntoKey(ephPriv, serverEphPub);
-  console.log(`[debug] After ServerHello mix: k=${state['k']?.toString('hex')}, h=${state['h']?.toString('hex')}`);
+  logger.debug("debug", `After ServerHello mix: k=${state['k']?.toString('hex')}, h=${state['h']?.toString('hex')}`);
 
   const serverStaticPub = state.decrypt(serverStaticEnc);
-  console.log(`[noise-handshake] Decrypted Server Static Pub: ${serverStaticPub.toString("hex")}`);
+  logger.debug("noise-handshake", `Decrypted Server Static Pub: ${serverStaticPub.toString("hex")}`);
   state.mixSharedSecretIntoKey(ephPriv, serverStaticPub);
 
   const certDecrypted = state.decrypt(certEnc);
@@ -312,7 +313,7 @@ export async function doHandshake(
     clientFinish: { static: encNoisePub, payload: encPayload },
   });
   const finishFrame = prependLength(clientFinish);
-  console.log(`[noise-handshake] Sending clientFinish frame (${finishFrame.length} bytes): ${finishFrame.toString("hex").slice(0, 32)}...`);
+  logger.debug("noise-handshake", `Sending clientFinish frame (${finishFrame.length} bytes): ${finishFrame.toString("hex").slice(0, 32)}...`);
   ws.send(finishFrame);
 
   // Derive final keys
@@ -415,6 +416,6 @@ async function readRawFrame(ws: RawWebSocket): Promise<Buffer> {
   const header = await ws.readRaw(3);
   const len = header.readUIntBE(0, 3);
   const payload = await ws.readRaw(len);
-  console.log(`[noise-handshake] Raw Frame received: header=${header.toString('hex')} (len=${len}), payload_head=${payload.toString('hex').slice(0, 32)}...`);
+  logger.debug("noise-handshake", `Raw Frame received: header=${header.toString('hex')} (len=${len}), payload_head=${payload.toString('hex').slice(0, 32)}...`);
   return payload;
 }

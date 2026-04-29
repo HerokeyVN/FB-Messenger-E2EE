@@ -170,7 +170,7 @@ export class FacebookDGWSocket extends EventEmitter {
       });
 
       ws.on("error", (err: Error) => {
-        this.emit("error", new Error(`[DGW:${kind}] ${err.message}`));
+        this.emit("error", new Error(`DGW:${kind}] ${err.message}`));
         reject(err);
       });
 
@@ -241,7 +241,7 @@ export class FacebookDGWSocket extends EventEmitter {
     if (frameType === FRAME_PING || frameType === FRAME_PONG) {
       return { frameType };
     }
-    
+
     if (frameType === 0x0e) {
       this.emit("debug", { type: "frame_0e_len", len: buf.length, hex: buf.toString("hex") });
     }

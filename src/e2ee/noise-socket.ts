@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { doHandshake } from "./noise-handshake.ts";
 import type { NoiseSocket, RawWebSocket } from "../models/e2ee.ts";
 import { encodeKeepAlive, unmarshal } from "./wa-binary.ts";
+import { logger } from "../utils/logger.ts";
 
 export class FacebookE2EESocket extends EventEmitter {
   private ws: WebSocket | null = null;
@@ -21,7 +22,7 @@ export class FacebookE2EESocket extends EventEmitter {
         const wsUrl = new URL(this.url);
         // Add chat specific query params if needed
         wsUrl.searchParams.set("cid", "client-" + Date.now());
-        
+
         const UserAgentStr = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36";
 
         this.ws = new (WebSocket as any)(wsUrl.toString(), undefined, {
@@ -143,12 +144,12 @@ export class FacebookE2EESocket extends EventEmitter {
     this.heartbeatInterval = setInterval(async () => {
       try {
         if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-          console.log("[NoiseSocket] Sending Noise heartbeat (0,0,0)...");
+          logger.debug("NoiseSocket", "Sending Noise heartbeat (0,0,0)...");
           this.ws.send(Buffer.from([0, 0, 0]));
         }
 
       } catch (err) {
-        console.error("[FacebookE2EESocket] Heartbeat failed:", err);
+        logger.error("FacebookE2EESocket", "Heartbeat failed:", err);
       }
     }, 15000);
   }
@@ -164,28 +165,28 @@ export class FacebookE2EESocket extends EventEmitter {
     if (!this.noiseSocket) return;
     try {
       while (this.isConnected && this.noiseSocket) {
-        console.log("[FacebookE2EESocket] Waiting for frame...");
+        logger.debug("FacebookE2EESocket", "Waiting for frame...");
         const frame = await this.noiseSocket.readFrame();
         if (frame && frame.length > 0) {
           try {
-            console.log(`[FacebookE2EESocket] Unmarshaling frame (${frame.length} bytes)...`);
+            logger.debug("FacebookE2EESocket", `Unmarshaling frame (${frame.length} bytes)...`);
             const node = unmarshal(frame);
-            console.log(`[FacebookE2EESocket] Decrypted node: <${node.tag}>`, JSON.stringify(node.attrs, null, 2));
+            logger.debug("FacebookE2EESocket", `Decrypted node: <${node.tag}>`, JSON.stringify(node.attrs, null, 2));
             if (node.content) {
-              console.log(`[FacebookE2EESocket] Node content type: ${Array.isArray(node.content) ? "Array[" + node.content.length + "]" : typeof node.content}`);
+              logger.debug("FacebookE2EESocket", `Node content type: ${Array.isArray(node.content) ? "Array[" + node.content.length + "]" : typeof node.content}`);
             }
           } catch (e) {
-            console.log(`[FacebookE2EESocket] Received decrypted frame (${frame.length} bytes), but failed to unmarshal: ${e}`);
-            console.log(`[FacebookE2EESocket] Frame hex: ${frame.toString("hex").slice(0, 100)}`);
+            logger.error("FacebookE2EESocket", `Received decrypted frame (${frame.length} bytes), but failed to unmarshal: ${e}`);
+            logger.debug("FacebookE2EESocket", `Frame hex: ${frame.toString("hex").slice(0, 100)}`);
           }
           this.emit("frame", frame);
         } else if (frame) {
           // Heartbeat or empty frame from server
-          console.log("[FacebookE2EESocket] Received empty frame (heartbeat from server)");
+          logger.debug("FacebookE2EESocket", "Received empty frame (heartbeat from server)");
         }
       }
     } catch (err) {
-      console.error("[FacebookE2EESocket] Read loop stopped due to error:", err);
+      logger.error("FacebookE2EESocket", "Read loop stopped due to error:", err);
       this.isConnected = false;
       this.emit("error", err);
     }
@@ -195,9 +196,9 @@ export class FacebookE2EESocket extends EventEmitter {
     if (!this.noiseSocket) throw new Error("Socket not connected");
     try {
       const node = unmarshal(data);
-      console.log(`[NoiseSocket] Sending encrypted node: <${node.tag}>`, JSON.stringify(node.attrs, null, 2));
+      logger.debug("NoiseSocket", `Sending encrypted node: <${node.tag}>`, JSON.stringify(node.attrs, null, 2));
     } catch (e) {
-      console.log(`[NoiseSocket] Sending raw encrypted frame (${data.length} bytes)`);
+      logger.debug("NoiseSocket", `Sending raw encrypted frame (${data.length} bytes)`);
     }
     await this.noiseSocket.sendFrame(data);
   }

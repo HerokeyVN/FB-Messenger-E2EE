@@ -1,8 +1,9 @@
 import type { MessengerEvent, Platform } from "./domain.ts";
 
 export interface ClientOptions {
-  appStatePath: string;
-  sessionStorePath: string;
+  appStatePath?: string;
+  appState?: any[] | string;
+  sessionStorePath?: string;
   platform?: Platform;
 }
 

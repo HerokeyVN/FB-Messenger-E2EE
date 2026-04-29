@@ -33,6 +33,7 @@ import {
   uuidStringify,
   parseFBProtobufSKDM
 } from "./facebook-protocol-utils.ts";
+import { logger } from "../utils/logger.ts";
 
 /**
  * Cast for strict libsignal params.
@@ -144,6 +145,7 @@ export async function processSKDM(
 
     if (buf.length === 53) {
       // Legacy Binary FB SKDM
+      logger.debug("signal-manager", `Processing Legacy FB SKDM: len=${buf.length}`);
       distributionId = uuidStringify(buf.slice(1, 17));
       chainId = buf.readUInt32BE(17);
       chainKey = buf.slice(21, 53);
@@ -157,7 +159,7 @@ export async function processSKDM(
       distributionId = stableDistributionId(groupJid || "unknown", senderJid);
     }
 
-    console.log(`[signal-manager] Processing FB SKDM: distId=${distributionId}, chainId=${chainId}, iter=${iteration}`);
+    logger.debug("signal-manager", `Processing FB SKDM: distId=${distributionId}, chainId=${chainId}, iter=${iteration}`);
 
     // We MUST use the Mock Public Key to verify spoofed SKMSG signatures later
     const signalPk = getMockPrivateKey(senderJid).getPublicKey();
@@ -208,7 +210,7 @@ export async function decryptGroup(
       // Already a valid Signal message
     } catch (e) {
       // Likely a Facebook signature-less message, needs re-encoding
-      console.log(`[signal-manager] Re-encoding Facebook-style SKMSG from ${senderJid}`);
+      logger.debug("signal-manager", `Re-encoding Facebook-style SKMSG from ${senderJid}`);
 
       let id: number, iteration: number, ct: Buffer, distId: string;
 
@@ -236,7 +238,7 @@ export async function decryptGroup(
     const result = await groupDecrypt(senderAddr, store as any, buf);
     return Buffer.from(result);
   } catch (e: any) {
-    console.error(`[signal-manager] groupDecrypt failed: ${e.message} (op: ${e.operation})`);
+    logger.error("signal-manager", `groupDecrypt failed: ${e.message} (op: ${e.operation})`);
     throw e;
   }
 }

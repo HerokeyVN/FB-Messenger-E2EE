@@ -9,8 +9,20 @@ export class AuthService {
   public constructor(private readonly sessionRepository: SessionRepository) {}
 
   public async readAppState(config: AuthConfig): Promise<AppStateCookie[]> {
-    const raw = await readFile(config.appStatePath, "utf-8");
-    const parsed = JSON.parse(raw) as unknown;
+    let parsed: unknown;
+
+    if (config.appState) {
+      if (typeof config.appState === "string") {
+        parsed = JSON.parse(config.appState);
+      } else {
+        parsed = config.appState;
+      }
+    } else if (config.appStatePath) {
+      const raw = await readFile(config.appStatePath, "utf-8");
+      parsed = JSON.parse(raw);
+    } else {
+      throw new Error("Either appState or appStatePath must be provided");
+    }
 
     if (!Array.isArray(parsed)) {
       throw new Error("Invalid appState format: expected an array");

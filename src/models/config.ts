@@ -1,12 +1,14 @@
 import type { Platform } from "./domain.ts";
 
 export interface AppEnv {
-  appStatePath: string;
-  sessionStorePath: string;
+  appStatePath?: string;
+  appState?: any[] | string;
+  sessionStorePath?: string;
   platform: Platform;
 }
 
 export interface AuthConfig {
-  appStatePath: string;
+  appStatePath?: string;
+  appState?: any[] | string;
   platform: Platform;
 }

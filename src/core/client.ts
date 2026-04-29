@@ -116,6 +116,7 @@ export class FBClient {
     return this.controller.connect(
       {
         appStatePath: this.options.appStatePath,
+        appState: this.options.appState,
         platform: this.options.platform ?? "facebook",
       },
       this.options.sessionStorePath,

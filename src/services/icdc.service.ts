@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { PrivateKey } from "@signalapp/libsignal-client";
 import { encodeICDCIdentityList, encodeSignedICDCIdentityList } from "../e2ee/icdc-payload.ts";
 import type { DeviceStore } from "../e2ee/device-store.ts";
+import { logger } from "../utils/logger.ts";
 
 export interface ICDCFetchResponse {
   device_identities: string[];
@@ -40,7 +41,7 @@ export class ICDCService {
     appId: string,
     deviceStore: DeviceStore,
   ): Promise<number> {
-    console.log("[ICDCService] Starting ICDC registration...");
+    logger.debug("ICDCService", "Starting ICDC registration...");
 
     // 1. Fetch current ICDC state
     const fetchResp = await this.fetchICDC(fbid, deviceStore.facebookUUID, appId, fbCat);
@@ -51,7 +52,7 @@ export class ICDCService {
     const deviceIdentities = fetchResp.device_identities.map((id) =>
       Buffer.from(id, "base64")
     );
-    
+
     // Check if our own identity is already there
     const ownIdentityPub = deviceStore.getIdentityPublicKey();
     let ownIdentityIndex = deviceIdentities.findIndex((id) =>
@@ -60,12 +61,12 @@ export class ICDCService {
 
     let nextSeq = fetchResp.icdc_seq;
     if (ownIdentityIndex === -1) {
-      console.log("[ICDCService] Own identity not found in list, adding...");
+      logger.debug("ICDCService", "Own identity not found in list, adding...");
       ownIdentityIndex = deviceIdentities.length;
       deviceIdentities.push(Buffer.from(ownIdentityPub));
       nextSeq++;
     } else {
-      console.log(`[ICDCService] Own identity found at index ${ownIdentityIndex}`);
+      logger.debug("ICDCService", `Own identity found at index ${ownIdentityIndex}`);
     }
 
     const icdcTs = Math.floor(Date.now() / 1000);
@@ -94,23 +95,23 @@ export class ICDCService {
     form.set("fb_cat", fbCat);
     form.set("app_id", appId);
     form.set("device_id", deviceStore.facebookUUID);
-    
+
     // Registration ID: big-endian uint32
     const regIdBuf = Buffer.alloc(4);
     regIdBuf.writeUInt32BE(deviceStore.registrationId);
     form.set("e_regid", regIdBuf.toString("base64"));
-    
+
     form.set("e_keytype", Buffer.from([0x05]).toString("base64")); // DJB_TYPE
     form.set("e_ident", ownIdentityPub.toString("base64"));
-    
+
     // Signed Prekey ID: big-endian uint24 (last 3 bytes of uint32)
     const skeyIdBuf = Buffer.alloc(4);
     skeyIdBuf.writeUInt32BE(deviceStore.signedPreKeyId);
     form.set("e_skey_id", skeyIdBuf.subarray(1).toString("base64"));
-    
+
     form.set("e_skey_val", deviceStore.getSignedPreKeyPublicKey().toString("base64"));
     form.set("e_skey_sig", deviceStore.signedPreKeySig.toString("base64"));
-    
+
     form.set("icdc_list", signedList.toString("base64"));
     form.set("icdc_ts", icdcTs.toString());
     form.set("icdc_seq", nextSeq.toString());
@@ -125,7 +126,7 @@ export class ICDCService {
       throw new Error(`ICDC register failed with status ${registerResp.status}`);
     }
 
-    console.log(`[ICDCService] ICDC registration successful. WA Device ID: ${registerResp.wa_device_id}`);
+    logger.info("ICDCService", `ICDC registration successful. WA Device ID: ${registerResp.wa_device_id}`);
     return registerResp.wa_device_id;
   }
 

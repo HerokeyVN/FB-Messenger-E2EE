@@ -44,3 +44,4 @@ session.json
 .agents/
 device.json
 *.code-workspace
+self-note.txt

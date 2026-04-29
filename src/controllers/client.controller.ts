@@ -60,6 +60,7 @@ import { FacebookE2EESocket } from "../e2ee/noise-socket.ts";
 import { FacebookDGWSocket } from "../e2ee/dgw-socket.ts";
 import { encodeClientPayload } from "../e2ee/message-builder.ts";
 import { str, now } from "../utils/fca-utils.ts";
+import { logger } from "../utils/logger.ts";
 import { EventMapper } from "./event-mapper.ts";
 import { DGWHandler } from "./dgw-handler.ts";
 import { E2EEHandler } from "./e2ee-handler.ts";
@@ -98,7 +99,7 @@ export class ClientController {
 
   // Lifecycle
 
-  public async connect(authConfig: AuthConfig, sessionStorePath: string): Promise<{ userId: string }> {
+  public async connect(authConfig: AuthConfig, sessionStorePath?: string): Promise<{ userId: string }> {
     const appState = await this.authService.readAppState(authConfig);
     const api = await this.gateway.login(appState);
     this.gateway.configure(api);
@@ -112,7 +113,9 @@ export class ClientController {
       updatedAt: now(),
     };
 
-    await this.authService.saveSession(sessionStorePath, session);
+    if (sessionStorePath) {
+      await this.authService.saveSession(sessionStorePath, session);
+    }
 
     this.api = api;
 
@@ -170,7 +173,7 @@ export class ClientController {
       this.eventMapper.emit({ type: "error", data: { message: err.message } });
     });
 
-    console.log("[ClientController] Fetching CAT...");
+    logger.debug("ClientController", "Fetching CAT...");
     const fbCat = await this.gateway.fetchCAT(this.requireApi());
 
     if (!ds.jidDevice) {
@@ -179,7 +182,7 @@ export class ClientController {
       const cookieStr = appState.map((c: any) => `${c.key}=${c.value}`).join("; ");
       this.icdcService.setCookies(cookieStr);
 
-      console.log("[ClientController] Registering new device via ICDC...");
+      logger.info("ClientController", "Registering new device via ICDC...");
       const waDeviceId = await this.icdcService.register(userId, fbCat, "2220391788200892", ds);
       ds.jidDevice = waDeviceId;
       ds.jidUser = userId;
@@ -222,7 +225,7 @@ export class ClientController {
             break;
         }
       } catch (err) {
-        console.error("[E2EE] Frame error:", err);
+        logger.error("E2EE", "Frame error:", err);
       }
     });
 
@@ -258,7 +261,7 @@ export class ClientController {
       const serverCount = await this.e2eeHandler.getServerPreKeyCount();
       if (serverCount < 10) await this.e2eeHandler.uploadPreKeys(80);
     } catch (err) {
-      console.error("[ClientController] Prekey sync failed:", err);
+      logger.error("ClientController", "Prekey sync failed:", err);
     }
 
     this.startHeartbeat();
@@ -368,7 +371,7 @@ export class ClientController {
         await this.sendE2EEText(input.threadId, input.text);
         return { messageId: `e2ee-${now()}`, timestampMs: now() };
       } catch (err) {
-        console.warn("[ClientController] E2EE send failed, fallback:", (err as Error).message);
+        logger.warn("ClientController", "E2EE send failed, fallback:", (err as Error).message);
       }
     }
     return this.messagingService.sendText(this.requireApi(), input);

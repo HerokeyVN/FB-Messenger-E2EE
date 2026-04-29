@@ -21,6 +21,7 @@ import type { DeviceStore } from "../e2ee/device-store.ts";
 import type { FacebookE2EESocket } from "../e2ee/noise-socket.ts";
 import type { E2EEClient } from "../e2ee/e2ee-client.ts";
 import type { EventMapper } from "./event-mapper.ts";
+import { logger } from "../utils/logger.ts";
 
 export class E2EEHandler {
   private readonly pendingIQs = new Map<string, { resolve: (val: any) => void; reject: (err: any) => void }>();
@@ -94,7 +95,7 @@ export class E2EEHandler {
         }
       }
     } catch (err) {
-      console.error("[E2EEHandler] Decryption failed:", err);
+      logger.error("E2EEHandler", "Decryption failed:", err);
       this.eventMapper.emitMappedEvent({
         type: "e2ee_message",
         data: {

@@ -32,11 +32,11 @@ async function main() {
   loadEnvFile(ENV_PATH);
 
   if (!existsSync(APPSTATE_PATH)) {
-    console.error(`[echo-e2ee] Missing appstate file at ${APPSTATE_PATH}`);
+    console.error(`echo-e2ee`, `Missing appstate file at ${APPSTATE_PATH}`);
     process.exit(1);
   }
 
-  console.log("[echo-e2ee] Initializing FBClient...");
+  console.log("[echo-e2ee`, `Initializing FBClient...");
   const client = new FBClient({
     appStatePath: APPSTATE_PATH,
     sessionStorePath: SESSION_PATH,
@@ -44,40 +44,40 @@ async function main() {
 
   client.onEvent(async (event) => {
     // Log all events for debugging
-    // console.log(`[echo-e2ee] Event ${event.type.replace(/_/g, " ")}:`, JSON.stringify(event.data, null, 2));
+    // console.log(`echo-e2ee`, `Event ${event.type.replace(/_/g, " ")}:`, JSON.stringify(event.data, null, 2));
 
     // Auto-echo for messages
     if (event.type === "e2ee_message") {
       const msg = event.data;
 
-      console.log(`[echo-e2ee] Echoing message to ${msg.threadId}: "${msg.text}"`);
+      console.log(`echo-e2ee`, `Echoing message to ${msg.threadId}: "${msg.text}"`);
     }
   });
 
   try {
-    console.log(`[echo-e2ee] Connecting to Messenger...`);
+    console.log(`echo-e2ee`, `Connecting to Messenger...`);
     const { userId } = await client.connect();
-    console.log(`[echo-e2ee] Connected as User ID: ${userId}`);
+    console.log(`echo-e2ee`, `Connected as User ID: ${userId}`);
 
     const userDevicePath = join(process.cwd(), `device-${userId}.json`);
     const finalDevicePath = existsSync(userDevicePath) ? userDevicePath : DEVICE_PATH;
 
-    console.log(`[echo-e2ee] Connecting E2EE stream using: ${finalDevicePath}`);
+    console.log(`echo-e2ee`, `Connecting E2EE stream using: ${finalDevicePath}`);
     await client.connectE2EE(finalDevicePath, userId);
-    console.log(`[echo-e2ee] E2EE Stream active. Waiting for messages...`);
+    console.log(`echo-e2ee`, `E2EE Stream active. Waiting for messages...`);
     setTimeout(() => {
       process.exit(0);
     }, 30000)
 
     // Keep process alive
     process.on("SIGINT", async () => {
-      console.log("\n[echo-e2ee] Shutting down...");
+      console.log("\n[echo-e2ee`, `Shutting down...");
       await client.disconnect();
       process.exit(0);
     });
 
   } catch (err) {
-    console.error("[echo-e2ee] Startup failed:", err);
+    console.error("[echo-e2ee`, `Startup failed:", err);
     await client.disconnect().catch(() => { });
     process.exit(1);
   }

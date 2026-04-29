@@ -30,6 +30,7 @@ import {
   SignedPreKeyRecord,
   SignedPreKeyStore,
 } from "@signalapp/libsignal-client";
+import { logger } from "../utils/logger.ts";
 
 /** Cast for strict libsignal params */
 const u8 = (b: Buffer | Uint8Array): Buffer => Buffer.isBuffer(b) ? b : Buffer.from(b.buffer, b.byteOffset, b.byteLength);
@@ -153,7 +154,7 @@ export class DeviceStore
 
     this.advSecretKey = randomBytes(32);
     this.facebookUUID = randomUUID();
-    console.log("[DeviceStore] Generated new Facebook UUID:", this.facebookUUID);
+    logger.debug("DeviceStore", "Generated new Facebook UUID:", this.facebookUUID);
     this.nextPreKeyId = 1;
   }
 
@@ -349,7 +350,7 @@ export class DeviceStore
   // libsignal PreKeyStore
 
   async savePreKey(id: number, record: PreKeyRecord): Promise<void> {
-    console.log(`[DeviceStore] savePreKey: ID=${id}`);
+    logger.debug("DeviceStore", `savePreKey: ID=${id}`);
     this.preKeys.set(id, record.serialize());
     this.saveToFile();
   }
@@ -391,14 +392,14 @@ export class DeviceStore
   }
 
   async getSignedPreKey(id: number): Promise<SignedPreKeyRecord> {
-    console.log(`[DeviceStore] getSignedPreKey called for ID: ${id} (type: ${typeof id})`);
-    console.log(`[DeviceStore] Current signedPreKeys IDs:`, Array.from(this.signedPreKeys.keys()));
+    logger.debug("DeviceStore", `getSignedPreKey called for ID: ${id} (type: ${typeof id})`);
+    logger.debug("DeviceStore", `Current signedPreKeys IDs:`, Array.from(this.signedPreKeys.keys()));
     const bytes = this.signedPreKeys.get(id);
     if (!bytes) {
-      console.log(`[DeviceStore] Key ${id} not found in map.`);
+      logger.debug("DeviceStore", `Key ${id} not found in map.`);
       // Fallback for transition if we only have the old fields
       if (id === this.signedPreKeyId && this.signedPreKeyPriv && this.signedPreKeySig) {
-        console.log(`[DeviceStore] Using fallback for key ${id}`);
+        logger.debug("DeviceStore", `Using fallback for key ${id}`);
         const priv = PrivateKey.deserialize(u8(this.signedPreKeyPriv));
         return SignedPreKeyRecord.new(
           this.signedPreKeyId,
@@ -423,7 +424,7 @@ export class DeviceStore
 
   async saveSenderKey(senderAddress: ProtocolAddress, distributionId: string, record: SenderKeyRecord): Promise<void> {
     const key = `${senderAddress.toString()}::${distributionId}`;
-    console.log(`[DeviceStore] saveSenderKey: ${key}`);
+    logger.debug("DeviceStore", `saveSenderKey: ${key}`);
     this.senderKeys.set(key as SenderKeyId, record.serialize());
     this.saveToFile();
   }
@@ -439,7 +440,7 @@ export class DeviceStore
   async getSenderKey(senderAddress: ProtocolAddress, distributionId: string): Promise<SenderKeyRecord> {
     const key = `${senderAddress.toString()}::${distributionId}`;
     const bytes = this.senderKeys.get(key as SenderKeyId);
-    console.log(`[DeviceStore] getSenderKey: ${key}, found=${!!bytes}`);
+    logger.debug("DeviceStore", `getSenderKey: ${key}, found=${!!bytes}`);
     if (!bytes) return null as any;
     return SenderKeyRecord.deserialize(Buffer.from(bytes));
   }

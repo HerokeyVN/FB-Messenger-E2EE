@@ -5,6 +5,7 @@ import { Buffer } from "node:buffer";
 import type { FCAApi, LoginData } from "fca-unofficial";
 import { encodeICDCIdentityList, encodeSignedICDCIdentityList } from "../e2ee/message-builder.ts";
 import { createHmac, createHash } from "node:crypto";
+import { logger } from "../utils/logger.ts";
 
 const require = createRequire(import.meta.url);
 const fcaLogin = require("fca-unofficial") as (
@@ -160,8 +161,8 @@ export class FacebookGatewayService {
   public async fetchCAT(api: FCAApi): Promise<string> {
     const fb_dtsg = (api as any).fb_dtsg;
     const userId = (api as any).getCurrentUserID();
-    
-    console.log("[FacebookGatewayService] Fetching CAT via GraphQL...");
+
+    logger.debug("FacebookGatewayService", "Fetching CAT via GraphQL...");
     const resText = await (api as any).httpPost("https://www.facebook.com/api/graphql/", {
       fb_dtsg,
       variables: "{}",
@@ -177,18 +178,18 @@ export class FacebookGatewayService {
     try {
       data = JSON.parse(cleanText);
     } catch (e) {
-      console.error("[FacebookGatewayService] Failed to parse CAT response:", resText);
+      logger.error("FacebookGatewayService", "Failed to parse CAT response:", resText);
       throw new Error("Failed to parse CAT response");
     }
 
     const cat = data?.data?.secure_message_over_wa_cat_query?.encrypted_serialized_cat;
 
     if (!cat) {
-      console.error("[FacebookGatewayService] CAT GraphQL response (no cat):", resText);
+      logger.error("FacebookGatewayService", "CAT GraphQL response (no cat):", resText);
       throw new Error("Failed to extract CAT token from GraphQL response");
     }
 
-    console.log(`[FacebookGatewayService] CAT fetched successfully. Length: ${cat.length}, Prefix: ${cat.slice(0, 20)}...`);
+    logger.debug("FacebookGatewayService", `CAT fetched successfully. Length: ${cat.length}, Prefix: ${cat.slice(0, 20)}...`);
     return cat;
   }
 
@@ -236,9 +237,9 @@ export class FacebookGatewayService {
       params.append(key, String(value));
     }
 
-    console.log("[FacebookGatewayService] Sending ICDC registration via api.httpPost...");
+    logger.debug("FacebookGatewayService", "Sending ICDC registration via api.httpPost...");
     const resText = await (api as any).httpPost("https://reg-e2ee.facebook.com/v2/fb_register_v2", fullPayload);
-    console.log("[FacebookGatewayService] Raw Register Response:", resText);
+    logger.debug("FacebookGatewayService", "Raw Register Response:", resText);
     if (!resText) throw new Error("Empty response from icdc_register");
     return JSON.parse(resText);
   }

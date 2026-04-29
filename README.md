@@ -34,13 +34,13 @@
 ### 1. Installation
 
 ```bash
-bun add fme-fb-messenger-e2ee
+bun add fb-messenger-e2ee
 ```
 
 ### 2. Basic Usage
 
 ```typescript
-import { FBClient } from "fme-fb-messenger-e2ee";
+import { FBClient } from "fb-messenger-e2ee";
 
 const client = new FBClient({
   appStatePath: "./appstate.json",

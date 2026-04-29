@@ -1,0 +1,72 @@
+syntax = "proto3";
+package waMsgTransport;
+option java_package = "com.whatsapp.proto";
+
+// Outer transport wrapper - this is what gets encrypted by Signal cipher
+// Reference: whatsmeow/proto/waMsgTransport/
+
+message WAMediaTransport {
+  message Integral {
+    bytes fileSHA256    = 1;
+    bytes mediaKey      = 2;
+    bytes fileEncSHA256 = 3;
+    string directPath   = 4;
+    uint64 mediaKeyTimestamp = 5;
+  }
+  message Ancillary {
+    string objectID     = 7;
+    uint64 fileLengthBytes = 9;
+  }
+  Integral integral   = 1;
+  Ancillary ancillary = 2;
+}
+
+message MessageTransport {
+  message Payload {
+    message SubProtocol {
+      bytes payload = 1;
+      int32 version = 2;
+      enum FutureProof {
+        PLACEHOLDER = 0;
+      }
+      FutureProof futureProof = 3;
+    }
+    SubProtocol applicationPayload = 1;
+    int32 futureProof = 2;
+  }
+
+  message Protocol {
+    message Integral {
+      bytes padding = 1;
+      // DeviceSentMessage - included when sending a copy to own devices
+      message DeviceSentMessage {
+        string destinationJID = 1;
+        string phash          = 2;
+      }
+      DeviceSentMessage DSM = 2;
+    }
+    message Ancillary {
+      // SenderKeyDistributionMessage - for group messages
+      message SenderKeyDistributionMessage {
+        string groupID                            = 1;
+        bytes axolotlSenderKeyDistributionMessage = 2;
+      }
+      SenderKeyDistributionMessage skdm = 2;
+      // BackupDirective
+      message BackupDirective {
+        string messageID = 1;
+        enum ActionType {
+          UPSERT = 0;
+          REMOVE = 1;
+        }
+        ActionType actionType = 2;
+      }
+      BackupDirective backupDirective = 4;
+    }
+    Integral  integral  = 1;
+    Ancillary ancillary = 2;
+  }
+
+  Payload  payload  = 1;
+  Protocol protocol = 2;
+}

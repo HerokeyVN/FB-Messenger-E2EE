@@ -1,0 +1,31 @@
+{
+  "name": "fb-messenger-e2ee",
+  "version": "0.1.0",
+  "description": "Bringing End-to-End Encryption to Messenger. A robust, modular TS toolkit for the Signal Protocol and Facebook's next-gen DGW architecture",
+  "module": "src/index.ts",
+  "type": "module",
+  "scripts": {
+    "dev": "bun run src/main.ts",
+    "start": "bun run src/main.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "NODE_OPTIONS='--experimental-vm-modules' npx jest"
+  },
+  "dependencies": {
+    "@noble/curves": "^2.2.0",
+    "@noble/hashes": "^2.2.0",
+    "@signalapp/libsignal-client": "0.70.0",
+    "fca-unofficial": "github:VangBanLaNhat/fca-unofficial",
+    "protobufjs": "^8.0.1"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/jest": "^30.0.0",
+    "@types/ws": "^8.18.1",
+    "jest": "^30.3.0",
+    "ts-jest": "^29.4.9",
+    "typescript": "^5.8.3"
+  },
+  "trustedDependencies": [
+    "@signalapp/libsignal-client"
+  ]
+}

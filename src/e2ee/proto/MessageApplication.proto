@@ -1,0 +1,32 @@
+syntax = "proto2";
+package WAMsgApplication;
+
+import "WACommon.proto";
+
+message MessageApplication {
+	message Metadata {
+		optional bytes frankingKey = 8;
+		optional int32 frankingVersion = 9;
+	}
+
+	message Payload {
+		oneof content {
+			SubProtocolPayload subProtocol = 4;
+		}
+	}
+
+	message SubProtocolPayload {
+		oneof subProtocol {
+			WACommon.SubProtocol consumerMessage = 2;
+			WACommon.SubProtocol businessMessage = 3;
+			WACommon.SubProtocol paymentMessage = 4;
+			WACommon.SubProtocol multiDevice = 5;
+			WACommon.SubProtocol voip = 6;
+			WACommon.SubProtocol armadillo = 7;
+		}
+		optional WACommon.FutureProofBehavior futureProof = 1;
+	}
+
+	optional Payload payload = 1;
+	optional Metadata metadata = 2;
+}

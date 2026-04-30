@@ -45,3 +45,4 @@ session.json
 device.json
 *.code-workspace
 self-note.txt
+scratch/

@@ -46,6 +46,7 @@ export class E2EEHandler {
     const fromJid = node.attrs.from;
     const participantJid = node.attrs.participant || node.attrs.from;
     const senderJid = participantJid;
+    const chatJid = node.attrs.from;
 
     if (!Buffer.isBuffer(ciphertext)) return;
 
@@ -81,7 +82,7 @@ export class E2EEHandler {
         }
 
         if (appMessage) {
-          const normalized = this.normalizeE2EEMessage(appMessage, senderJid, node.attrs.id, messageApp);
+          const normalized = this.normalizeE2EEMessage(appMessage, senderJid, chatJid, node.attrs.id, messageApp);
           if (normalized) {
             normalized.isArmadillo = isArmadillo;
             this.eventMapper.emitMappedEvent({ type: "e2ee_message", data: normalized });
@@ -230,15 +231,15 @@ export class E2EEHandler {
     await socket.sendFrame(marshal(cleanIQ));
   }
 
-  private normalizeE2EEMessage(appMessage: any, senderJid: string, messageId: string, messageApp?: any): any {
+  private normalizeE2EEMessage(appMessage: any, senderJid: string, chatJid: string, messageId: string, messageApp?: any): any {
     const payload = appMessage?.payload;
     if (!payload) return null;
     const senderId = senderJid.split(".")[0];
     const common = {
-      chatJid: senderJid,
+      chatJid: chatJid,
       senderJid: senderJid,
       senderId: senderId,
-      threadId: senderId,
+      threadId: chatJid,
       messageId: messageId,
       timestampMs: now(),
       replyToId: messageApp?.metadata?.quotedMessage?.stanzaID,

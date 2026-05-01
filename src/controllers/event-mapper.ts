@@ -144,7 +144,30 @@ export class EventMapper {
       return;
     }
     if (type === "e2ee_message" || type === "e2eeMessage") {
-      this.emit({ type: "e2ee_message", data: rawEvent.data as any });
+      const e2eeData = rawEvent.data as any;
+      if (!e2eeData) return;
+
+      const chatJid = str(e2eeData.chatJid || e2eeData.threadId);
+      const senderJid = str(e2eeData.senderJid);
+      const senderId = str(e2eeData.senderId) || senderJid.split(".")[0] || senderJid.split("@")[0] || senderJid;
+      this.emit({
+        type: "e2ee_message",
+        data: {
+          id: str(e2eeData.messageId || e2eeData.messageID),
+          threadId: chatJid,
+          chatJid,
+          senderJid,
+          senderId,
+          text: str(e2eeData.text || e2eeData.body || e2eeData.error || ""),
+          timestampMs: num(e2eeData.timestampMs || e2eeData.timestamp) || now(),
+          attachments: Array.isArray(e2eeData.attachments) ? e2eeData.attachments : undefined,
+          mentions: Array.isArray(e2eeData.mentions) ? e2eeData.mentions : undefined,
+          replyTo: e2eeData.replyToId ? {
+            messageId: str(e2eeData.replyToId),
+            senderId: str(e2eeData.replyToSenderJid),
+          } : undefined,
+        }
+      });
       return;
     }
     if (type === "e2ee_reaction" || type === "e2eeReaction") {

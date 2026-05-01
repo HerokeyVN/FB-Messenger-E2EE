@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { appendFileSync } from "node:fs";
 import { doHandshake } from "./noise-handshake.ts";
 import type { NoiseSocket, RawWebSocket } from "../models/e2ee.ts";
 import { encodeKeepAlive, unmarshal } from "./wa-binary.ts";
@@ -197,8 +198,20 @@ export class FacebookE2EESocket extends EventEmitter {
     try {
       const node = unmarshal(data);
       logger.debug("NoiseSocket", `Sending encrypted node: <${node.tag}>`, JSON.stringify(node.attrs, null, 2));
+      try {
+        const record = { ts: Date.now(), tag: node.tag, attrs: node.attrs, hex: data.toString("hex") };
+        appendFileSync("./outbound_frames.log", JSON.stringify(record) + "\n");
+      } catch (e) {
+        logger.debug("NoiseSocket", "Failed to write outbound frame log:", e);
+      }
     } catch (e) {
       logger.debug("NoiseSocket", `Sending raw encrypted frame (${data.length} bytes)`);
+      try {
+        const record = { ts: Date.now(), tag: null, attrs: null, hex: data.toString("hex") };
+        appendFileSync("./outbound_frames.log", JSON.stringify(record) + "\n");
+      } catch (e) {
+        logger.debug("NoiseSocket", "Failed to write outbound frame log:", e);
+      }
     }
     await this.noiseSocket.sendFrame(data);
   }

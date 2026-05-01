@@ -147,14 +147,14 @@ export class E2EEService {
    */
   public async downloadMedia(opts: E2EEDownloadOptions): Promise<E2EEDownloadResult> {
     this.ensureEnabled();
-    // 1. Fetch encrypted payload from CDN
+    // Fetch encrypted payload from CDN
     const resp = await fetch(opts.directPath);
     if (!resp.ok) {
       throw new Error(`Failed to fetch media from CDN: ${resp.status}`);
     }
     const encryptedData = Buffer.from(await resp.arrayBuffer());
 
-    // 2. Determine MediaTypeKey
+    // Determine MediaTypeKey
     let type: MediaTypeKey;
     switch (opts.mediaType) {
       case "image": type = "image"; break;
@@ -166,7 +166,7 @@ export class E2EEService {
       default: type = "document"; break;
     }
 
-    // 3. Decrypt
+    // Decrypt
     const mediaKey = Buffer.from(opts.mediaKey, "base64");
     const fileSHA256 = Buffer.from(opts.mediaSha256, "base64");
     const fileEncSHA256 = opts.mediaEncSha256 ? Buffer.from(opts.mediaEncSha256, "base64") : undefined;

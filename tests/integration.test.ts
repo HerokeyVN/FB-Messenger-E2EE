@@ -21,6 +21,7 @@ import { FacebookGatewayService } from "../src/services/facebook-gateway.service
 import { MediaService } from "../src/services/media.service.ts";
 import { MessagingService } from "../src/services/messaging.service.ts";
 import { ThreadService } from "../src/services/thread.service.ts";
+import { ICDCService } from "../src/services/icdc.service.ts";
 
 // ---- Fixture factories -------------------------------------------------------
 
@@ -62,6 +63,7 @@ function makeServices() {
   const threadService = new ThreadService(mediaService);
   const authService = new AuthService({ readSession: async () => null, saveSession: async () => undefined } as unknown as ConstructorParameters<typeof AuthService>[0]);
   const e2eeService = new E2EEService();
+  const icdcService = new ICDCService("test-agent");
   const eventBus = new EventEmitter();
   const controller = new ClientController(
     authService,
@@ -70,6 +72,7 @@ function makeServices() {
     mediaService,
     threadService,
     e2eeService,
+    icdcService,
     eventBus,
   );
   return { gateway, mediaService, messagingService, threadService, e2eeService, eventBus, controller };
@@ -104,10 +107,10 @@ describe("MediaService.normalizeAttachment", () => {
     };
     const att = mediaService.normalizeAttachment(raw);
     expect(att).not.toBeNull();
-    expect(att!.type).toBe("photo");
-    expect(att!.url).toBe("https://cdn.fb.com/img.jpg");
-    expect(att!.width).toBe(1920);
-    expect(att!.height).toBe(1080);
+    if (att?.type !== "photo") throw new Error("Expected photo attachment");
+    expect(att.url).toBe("https://cdn.fb.com/img.jpg");
+    expect(att.width).toBe(1920);
+    expect(att.height).toBe(1080);
   });
 
   test("maps audio attachment with duration", () => {
@@ -119,8 +122,8 @@ describe("MediaService.normalizeAttachment", () => {
       fileSize: 512000,
     };
     const att = mediaService.normalizeAttachment(raw);
-    expect(att!.type).toBe("audio");
-    expect(att!.duration).toBe(30);
+    if (att?.type !== "audio") throw new Error("Expected audio attachment");
+    expect(att.duration).toBe(30);
   });
 
   test("maps sticker attachment", () => {
@@ -132,9 +135,9 @@ describe("MediaService.normalizeAttachment", () => {
   test("maps location attachment", () => {
     const raw = { type: "location", latitude: 10.123, longitude: 106.456 };
     const att = mediaService.normalizeAttachment(raw);
-    expect(att!.type).toBe("location");
-    expect(att!.latitude).toBe(10.123);
-    expect(att!.longitude).toBe(106.456);
+    if (att?.type !== "location") throw new Error("Expected location attachment");
+    expect(att.latitude).toBe(10.123);
+    expect(att.longitude).toBe(106.456);
   });
 });
 
@@ -321,10 +324,12 @@ describe("ClientController event mapping", () => {
     return events;
   }
 
-  // Helper to directly fire a raw event through the controller's private handler
+  // Helper to directly fire a raw event through the controller's private mapper.
   function fireRaw(controller: ClientController, raw: Record<string, unknown>): void {
-    // Access private method via index signature - acceptable in tests
-    (controller as unknown as { emitMappedEvent(r: Record<string, unknown>): void }).emitMappedEvent(raw);
+    const testController = controller as unknown as {
+      eventMapper: { emitMappedEvent(rawEvent: Record<string, unknown>): void };
+    };
+    testController.eventMapper.emitMappedEvent(raw);
   }
 
   test("maps standard message event", () => {

@@ -159,6 +159,9 @@ export type EncryptionResult =
   | {
     type: "group";
     groupCiphertext: Buffer;
+    devicePayload: Buffer;
+    selfDevicePayload: Buffer;
+    skdmPayload: Buffer;
     skdm: { groupId: string; skdmBytes: Buffer; distributionId: string };
     frankingTag: Buffer;
   };
@@ -191,6 +194,11 @@ export interface MessageTransportOptions {
   skdm?: {
     groupId: string;
     skdmBytes: Buffer;
+  };
+  /** Included for group sends to match whatsmeow's backup directive */
+  backupDirective?: {
+    messageId: string;
+    actionType?: "UPSERT" | "REMOVE";
   };
   padding?: Buffer;
 }

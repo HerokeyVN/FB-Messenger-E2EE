@@ -25,15 +25,13 @@ import {
   processSKDM,
   establishSession,
   jidToAddress,
+  hasSession,
 } from "./signal-manager.ts";
 import type {
   E2EEDecryptMediaOptions,
-  E2EEEncryptMediaOptions,
   E2EEEncryptMediaResult,
   E2EESendTextOptions,
-  E2EESendTextResult,
   EncryptionResult,
-  MediaFields,
 } from "../models/e2ee.ts";
 export type {
   E2EEDecryptMediaOptions,
@@ -43,7 +41,7 @@ export type {
   E2EESendTextResult,
   EncryptionResult,
   MediaFields,
-};
+} from "../models/e2ee.ts";
 import {
   encodeMessageApplication,
   encodeMessageTransport,
@@ -122,6 +120,7 @@ export class E2EEClient {
     groupJid: string,
     selfJid: string,
     text: string,
+    messageId: string,
     replyToId?: string,
     replyToSenderJid?: string
   ): Promise<Extract<EncryptionResult, { type: "group" }>> {
@@ -134,22 +133,70 @@ export class E2EEClient {
 
     const { skdm, distributionId } = await createSenderKeyDistributionMessage(this.store, groupJid, selfJid);
 
-    const transport = encodeMessageTransport({
+    const groupTransport = encodeMessageTransport({
       messageApp,
+      backupDirective: { messageId, actionType: "UPSERT" },
+    });
+    // Per-device SKDM transport should not include application payload
+    const deviceTransport = encodeMessageTransport({
+      messageApp: Buffer.alloc(0),
       skdm: { groupId: groupJid, skdmBytes: Buffer.from(skdm.serialize()) },
     });
+    // DSM is included only for sender's other devices (same user, different device)
+    const selfDeviceTransport = encodeMessageTransport({
+      messageApp: Buffer.alloc(0),
+      skdm: { groupId: groupJid, skdmBytes: Buffer.from(skdm.serialize()) },
+      dsm: { destinationJid: groupJid, phash: "" },
+    });
 
-    const groupCiphertext = await encryptGroup(this.store, groupJid, selfJid, transport);
+    const groupCiphertext = await encryptGroup(this.store, groupJid, selfJid, groupTransport, distributionId);
 
     return {
       type: "group",
       groupCiphertext: Buffer.from(groupCiphertext),
+      devicePayload: Buffer.from(deviceTransport),
+      selfDevicePayload: Buffer.from(selfDeviceTransport),
+      skdmPayload: Buffer.from(groupTransport),
       skdm: {
         groupId: groupJid,
         skdmBytes: Buffer.from(skdm.serialize()),
         distributionId,
       },
       frankingTag,
+    };
+  }
+
+  /** Check if a session exists for a given device JID. */
+  async hasSession(jid: string): Promise<boolean> {
+    const addr = jidToAddress(jid);
+    return hasSession(this.store, addr);
+  }
+
+  /** Encrypt an SKDM for a specific device DM. */
+  async encryptSKDM(recipientJid: string, selfJid: string, skdm: { groupId: string; skdmBytes: Buffer }): Promise<{ type: "msg" | "pkmsg"; ciphertext: Buffer }> {
+    const transport = encodeMessageTransport({
+      messageApp: Buffer.alloc(0), // No application payload for SKDM-only DM
+      skdm,
+    });
+
+    const recipientAddr = jidToAddress(recipientJid);
+    const selfAddr = jidToAddress(selfJid);
+    const encrypted = await encryptDM(this.store, recipientAddr, selfAddr, transport);
+
+    return {
+      type: encrypted.type,
+      ciphertext: Buffer.from(encrypted.ciphertext),
+    };
+  }
+
+  async encryptDevicePayload(recipientJid: string, selfJid: string, payload: Buffer): Promise<{ type: "msg" | "pkmsg"; ciphertext: Buffer }> {
+    const recipientAddr = jidToAddress(recipientJid);
+    const selfAddr = jidToAddress(selfJid);
+    const encrypted = await encryptDM(this.store, recipientAddr, selfAddr, payload);
+
+    return {
+      type: encrypted.type,
+      ciphertext: Buffer.from(encrypted.ciphertext),
     };
   }
 

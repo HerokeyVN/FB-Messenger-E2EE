@@ -21,6 +21,7 @@ import type { DeviceStore } from "../e2ee/device-store.ts";
 import type { FacebookE2EESocket } from "../e2ee/noise-socket.ts";
 import type { E2EEClient } from "../e2ee/e2ee-client.ts";
 import type { EventMapper } from "./event-mapper.ts";
+import type { RawPreKeyBundle } from "../models/e2ee.ts";
 import { logger } from "../utils/logger.ts";
 
 export class E2EEHandler {
@@ -35,6 +36,50 @@ export class E2EEHandler {
   public async handleEncryptedMessage(node: Node, selfUserId: string, e2eeClient: E2EEClient) {
     this.sendAck(node);
 
+    const fromJid = node.attrs.from;
+    const participantJid = node.attrs.participant || node.attrs.from;
+    const senderJid = participantJid;
+    const chatJid = node.attrs.from;
+    const selfJid = `${selfUserId}.0@msgr`;
+
+    //Check for participant-specific SKDM in 'participants' node
+    const participantsNode = Array.isArray(node.content) ? node.content.find((c: any) => c.tag === "participants") : null;
+    if (participantsNode && Array.isArray(participantsNode.content)) {
+      const myToNode = participantsNode.content.find((n: any) => 
+        n.tag === "to" && (n.attrs.jid === selfJid || n.attrs.jid?.split(":")[0] === selfUserId || n.attrs.jid?.split(".")[0] === selfUserId)
+      );
+      if (myToNode && Array.isArray(myToNode.content)) {
+        const myEnc = myToNode.content.find((n: any) => n.tag === "enc");
+        if (myEnc && Buffer.isBuffer(myEnc.content)) {
+          logger.debug("E2EEHandler", `Found participant-specific SKDM DM from ${senderJid}`);
+          try {
+            let dmDecrypted: Buffer | null = null;
+            if (myEnc.attrs.type === "msg") {
+              dmDecrypted = await e2eeClient.decryptDMMessage(senderJid, myEnc.content);
+            } else if (myEnc.attrs.type === "pkmsg") {
+              dmDecrypted = await e2eeClient.decryptDMPreKeyMessage(senderJid, selfUserId, myEnc.content);
+            }
+
+            if (dmDecrypted) {
+              const transport = decodeMessageTransport(dmDecrypted);
+              if (transport?.protocol?.ancillary?.skdm) {
+                const skdm = transport.protocol.ancillary.skdm;
+                const gid = skdm.groupID || skdm.groupId || chatJid;
+                const skBytes = skdm.axolotlSenderKeyDistributionMessage || skdm.skdmBytes;
+                if (skBytes) {
+                  logger.info("E2EEHandler", `Processing SKDM from participants node for group ${gid} from ${senderJid}`);
+                  await e2eeClient.processSenderKeyDistribution(senderJid, skBytes, gid);
+                }
+              }
+            }
+          } catch (err) {
+            logger.warn("E2EEHandler", `Failed to decrypt participant SKDM from ${senderJid}: ${err}`);
+          }
+        }
+      }
+    }
+
+    //Process main 'enc' node
     const enc = Array.isArray(node.content)
       ? node.content.find((c: any) => c.tag === "enc")
       : (node.content?.tag === "enc" ? node.content : null);
@@ -43,10 +88,6 @@ export class E2EEHandler {
 
     const type = enc.attrs.type;
     const ciphertext = enc.content;
-    const fromJid = node.attrs.from;
-    const participantJid = node.attrs.participant || node.attrs.from;
-    const senderJid = participantJid;
-    const chatJid = node.attrs.from;
 
     if (!Buffer.isBuffer(ciphertext)) return;
 
@@ -123,6 +164,8 @@ export class E2EEHandler {
       this.getSocket()?.sendFrame(marshal(pong));
     }
 
+    logger.debug("E2EEHandler", `Handling IQ: id=${id}, type=${type}, xmlns=${node.attrs.xmlns}`);
+
     if (type === "result") {
       const content = node.content;
       let countNode = null;
@@ -176,6 +219,191 @@ export class E2EEHandler {
         }
       }, 5000);
     });
+  }
+
+  public async getGroupParticipants(groupJid: string): Promise<string[]> {
+    const id = `gp-${now()}`;
+    const iq = encodeIQ({ id, to: groupJid, type: "get", xmlns: "w:g2" }, [
+      encodeNode("query", { request: "interactive" }, undefined)
+    ]);
+
+    logger.debug("E2EEHandler", `Sending getGroupParticipants IQ for ${groupJid}, id: ${id}`);
+    const res = await new Promise<Node>((resolve, reject) => {
+      this.pendingIQs.set(id, { resolve, reject });
+      this.getSocket()?.sendFrame(iq).catch(err => {
+        logger.error("E2EEHandler", `Failed to send getGroupParticipants IQ:`, err);
+        reject(err);
+      });
+      
+      setTimeout(() => {
+        if (this.pendingIQs.has(id)) {
+          logger.error("E2EEHandler", `getGroupParticipants IQ timeout for ${id}`);
+          this.pendingIQs.delete(id);
+          reject(new Error(`getGroupParticipants timeout for ${groupJid}`));
+        }
+      }, 10000);
+    });
+
+    logger.debug("E2EEHandler", `Received getGroupParticipants response for ${id}`);
+
+    const groupNode = Array.isArray(res.content) ? res.content.find(n => n.tag === "group") : null;
+    if (!groupNode || !Array.isArray(groupNode.content)) {
+      logger.warn("E2EEHandler", `No group node found in getGroupParticipants response for ${groupJid}`);
+      return [];
+    }
+
+    const participants = groupNode.content
+      .filter((n: any) => n.tag === "participant" && n.attrs.jid)
+      .map((n: any) => n.attrs.jid);
+
+    logger.info("E2EEHandler", `Found ${participants.length} participants for ${groupJid}`);
+    return participants;
+  }
+
+  public async getDeviceList(userJids: string[]): Promise<string[]> {
+    if (userJids.length === 0) return [];
+    
+    const id = `${now()}`;
+    const iq = encodeIQ({
+      id,
+      to: "s.whatsapp.net",
+      type: "get",
+      xmlns: "fbid:devices",
+    }, [
+      encodeNode("users", {}, userJids.map(jid => encodeNode("user", { jid })))
+    ]);
+
+    logger.debug("E2EEHandler", `Sending getDeviceList IQ for ${userJids.length} users, id: ${id}`);
+    const res = await new Promise<Node>((resolve, reject) => {
+      this.pendingIQs.set(id, { resolve, reject });
+      this.getSocket()?.sendFrame(iq).catch(err => {
+        logger.error("E2EEHandler", `Failed to send getDeviceList IQ:`, err);
+        reject(err);
+      });
+      
+      setTimeout(() => {
+        if (this.pendingIQs.has(id)) {
+          logger.error("E2EEHandler", `getDeviceList IQ timeout for ${id}`);
+          this.pendingIQs.delete(id);
+          reject(new Error(`getDeviceList timeout for ${userJids.length} users`));
+        }
+      }, 10000);
+    });
+
+    logger.debug("E2EEHandler", `Received getDeviceList response for ${id}`);
+    
+    const usersNode = Array.isArray(res.content) ? res.content.find(n => n.tag === "users") : null;
+    if (!usersNode || !Array.isArray(usersNode.content)) return [];
+
+    const deviceJids: string[] = [];
+    for (const userNode of usersNode.content) {
+      if (userNode.tag !== "user" || !Array.isArray(userNode.content)) continue;
+      
+      const devicesNode = userNode.content.find((n: any) => n.tag === "devices");
+      if (!devicesNode || !Array.isArray(devicesNode.content)) continue;
+      
+      const baseJid = userNode.attrs.jid; // e.g. 12345.0@msgr or 12345@msgr
+      const [userWithDevice, server] = baseJid.split("@");
+      const userId = userWithDevice.split(".")[0];
+      
+      for (const deviceNode of devicesNode.content) {
+        if (deviceNode.tag === "device" && deviceNode.attrs.id) {
+          deviceJids.push(`${userId}.${deviceNode.attrs.id}@${server}`);
+        }
+      }
+    }
+
+    logger.info("E2EEHandler", `Discovered ${deviceJids.length} devices for ${userJids.length} users`);
+    return deviceJids;
+  }
+
+  public async getPreKeyBundle(jid: string): Promise<RawPreKeyBundle> {
+    const id = `pkb-${now()}`;
+    const iq = encodeIQ({ id, to: "s.whatsapp.net", type: "get", xmlns: "encrypt" }, [
+      encodeNode("key", {}, [
+        encodeNode("user", { jid }, undefined)
+      ])
+    ]);
+
+    const res = await new Promise<Node>((resolve, reject) => {
+      this.pendingIQs.set(id, { resolve, reject });
+      this.getSocket()?.sendFrame(iq).catch(reject);
+      setTimeout(() => {
+        if (this.pendingIQs.has(id)) {
+          this.pendingIQs.delete(id);
+          reject(new Error(`getPreKeyBundle timeout for ${jid}`));
+        }
+      }, 10000);
+    });
+
+    // Parse prekey bundle from response
+    logger.debug("E2EEHandler", `getPreKeyBundle response for ${jid}: ${JSON.stringify(res, (k, v) => Buffer.isBuffer(v) ? v.toString("hex") : v)}`);
+
+    const findTag = (node: any, tag: string): any => {
+      if (node?.tag === tag) return node;
+      if (Array.isArray(node?.content)) {
+        for (const child of node.content) {
+          const found = findTag(child, tag);
+          if (found) return found;
+        }
+      }
+      return null;
+    };
+
+    const userNode = findTag(res, "user");
+    const keyNode = findTag(res, "key");
+
+    if (!userNode) throw new Error(`Missing user node in prekey bundle for ${jid}`);
+    if (!keyNode) throw new Error(`Missing key node in prekey bundle for ${jid}`);
+
+    const registration = findTag(userNode, "registration")?.content;
+    const identity = findTag(userNode, "identity")?.content;
+    const skey = findTag(userNode, "skey");
+    const key = findTag(keyNode, "key") || keyNode; // Could be the key node itself or have a nested key
+
+    if (!registration || !identity || !skey) throw new Error(`Missing required prekey components for ${jid}`);
+
+    const requireBuffer = (value: unknown, field: string): Buffer => {
+      if (Buffer.isBuffer(value)) return value;
+      throw new Error(`Missing or invalid ${field} in prekey bundle for ${jid}`);
+    };
+    const keyWithPrefix = (value: unknown, field: string): Buffer => {
+      const keyBytes = requireBuffer(value, field);
+      return keyBytes.length === 32 ? Buffer.concat([Buffer.from([5]), keyBytes]) : keyBytes;
+    };
+    const readKeyId = (value: unknown): number => {
+      if (!Buffer.isBuffer(value) || value.length === 0) return 0;
+      return value.readUIntBE(0, Math.min(value.length, 3));
+    };
+    const parseDeviceId = (deviceJid: string): number => {
+      const devicePart = deviceJid.split("@")[0]?.split(".")[1];
+      const deviceId = Number(devicePart);
+      return Number.isFinite(deviceId) && deviceId > 0 ? deviceId : 1;
+    };
+
+    const signedPreKeyId = findTag(skey, "id")?.content;
+    const signedPreKeyValue = findTag(skey, "value")?.content;
+    const signedPreKeySignature = findTag(skey, "signature")?.content;
+    const preKeyId = findTag(key, "id")?.content;
+    const preKeyValue = findTag(key, "value")?.content;
+    const hasPreKey = Boolean(findTag(key, "value"));
+
+    const bundle: RawPreKeyBundle = {
+      registrationId: Buffer.isBuffer(registration) && registration.length === 4 ? registration.readUInt32BE(0) : 0,
+      deviceId: parseDeviceId(jid),
+      identityKey: keyWithPrefix(identity, "identity"),
+      signedPreKey: {
+        keyId: readKeyId(signedPreKeyId),
+        publicKey: keyWithPrefix(signedPreKeyValue, "signed prekey public key"),
+        signature: requireBuffer(signedPreKeySignature, "signed prekey signature"),
+      },
+      preKey: hasPreKey ? {
+        keyId: readKeyId(preKeyId),
+        publicKey: keyWithPrefix(preKeyValue, "prekey public key"),
+      } : undefined,
+    };
+
+    return bundle;
   }
 
   public async uploadPreKeys(count: number): Promise<void> {

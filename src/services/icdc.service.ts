@@ -43,7 +43,7 @@ export class ICDCService {
   ): Promise<number> {
     logger.debug("ICDCService", "Starting ICDC registration...");
 
-    // 1. Fetch current ICDC state
+    // Fetch current ICDC state
     const fetchResp = await this.fetchICDC(fbid, deviceStore.facebookUUID, appId, fbCat);
     if (fetchResp.status !== 200) {
       throw new Error(`ICDC fetch failed with status ${fetchResp.status}`);
@@ -71,7 +71,7 @@ export class ICDCService {
 
     const icdcTs = Math.floor(Date.now() / 1000);
 
-    // 2. Build and sign ICDC Identity List
+    // Build and sign ICDC Identity List
     const unsignedList = encodeICDCIdentityList({
       seq: nextSeq,
       timestamp: icdcTs,
@@ -87,7 +87,7 @@ export class ICDCService {
       signature: signature,
     });
 
-    // 3. Register
+    // Register
     const identitiesHash = this.calculateIdentitiesHash(deviceIdentities);
 
     const form = new URLSearchParams();

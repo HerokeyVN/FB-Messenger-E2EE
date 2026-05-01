@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { type AssertEqual, TypedEventEmitter } from "../src/types/advanced-types.ts";
 import type { Attachment, ImageAttachment, VideoAttachment } from "../src/models/domain.ts";
-import type { MessengerEventMap } from "../src/core/client.ts";
+import type { MessengerEventMap } from "../src/models/client.ts";
 
 describe("Type-level Tests", () => {
   it("AssertEqual utility works", () => {

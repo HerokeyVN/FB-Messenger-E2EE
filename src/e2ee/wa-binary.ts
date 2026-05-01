@@ -66,6 +66,13 @@ SingleByteTokens.forEach((token, idx) => {
   if (token) TokenToIndex[token] = idx;
 });
 
+const DoubleTokenToIndex: Record<string, { dict: number; index: number }> = {};
+DoubleByteTokens.forEach((dict, dictIdx) => {
+  dict.forEach((token, tokenIdx) => {
+    if (token) DoubleTokenToIndex[token] = { dict: dictIdx, index: tokenIdx };
+  });
+});
+
 export interface Node {
   tag: string;
   attrs: Record<string, any>;
@@ -162,7 +169,7 @@ export class BinaryDecoder {
       res += this.unpackByte(tag, (b & 0xF0) >> 4);
       res += this.unpackByte(tag, b & 0x0F);
     }
-    if (startByte >> 7 !== 0) res = res.slice(0, -1);
+    if (startByte >> 7 !== 0 && tag === BinaryToken.Hex8) res = res.slice(0, -1);
     return res;
   }
 
@@ -353,9 +360,15 @@ export function encodeNode(tag: string, attrs: Record<string, string>, children?
 
   const chunks: Buffer[] = [encodeListStart(listSize), encodeString(tag)];
 
+  const JID_ATTRIBUTES = new Set(["to", "from", "jid", "participant", "recipient", "target"]);
+
   for (const [k, v] of Object.entries(attrs)) {
     chunks.push(encodeString(k));
-    chunks.push(encodeString(v));
+    if (typeof v === "string" && (v.includes("@") || JID_ATTRIBUTES.has(k))) {
+      chunks.push(encodeJID(v));
+    } else {
+      chunks.push(encodeString(String(v)));
+    }
   }
 
   if (hasContent) {
@@ -390,6 +403,12 @@ function encodeListStart(size: number): Buffer {
 function encodeString(val: string): Buffer {
   const token = TokenToIndex[val];
   if (typeof token === "number") return Buffer.from([token]);
+
+  const doubleToken = DoubleTokenToIndex[val];
+  if (doubleToken) {
+    return Buffer.from([BinaryToken.Dictionary0 + doubleToken.dict, doubleToken.index]);
+  }
+
   return encodeStringRaw(Buffer.from(val));
 }
 
@@ -407,4 +426,66 @@ function encodeStringRaw(buf: Buffer): Buffer {
   header[0] = BinaryToken.Binary32;
   header.writeUInt32BE(buf.length, 1);
   return Buffer.concat([header, buf]);
+}
+
+function encodeJID(jid: string): Buffer {
+  const atIdx = jid.indexOf("@");
+  if (atIdx === -1) return encodeString(jid);
+
+  const userFull = jid.slice(0, atIdx);
+  const server = jid.slice(atIdx + 1);
+
+  if (server === "msgr") {
+    let user = userFull;
+    let device = 0;
+    const dotIdx = userFull.indexOf(".");
+    const colonIdx = userFull.indexOf(":");
+    const splitIdx = dotIdx !== -1 ? dotIdx : colonIdx;
+
+    if (splitIdx !== -1) {
+      user = userFull.slice(0, splitIdx);
+      device = parseInt(userFull.slice(splitIdx + 1));
+    }
+
+    const chunks = [Buffer.from([BinaryToken.FBJID]), encodeString(user)];
+    const devBuf = Buffer.alloc(2);
+    devBuf.writeUInt16BE(device);
+    chunks.push(devBuf);
+    chunks.push(encodeString(server));
+    return Buffer.concat(chunks);
+  }
+
+  // Handle ADJID (for @s.whatsapp.net with devices)
+  if (server === "s.whatsapp.net" && (userFull.includes(".") || userFull.includes(":"))) {
+    let user = userFull;
+    let agent = 0;
+    let device = 0;
+
+    // Format: user.agent:device
+    const dotIdx = userFull.indexOf(".");
+    const colonIdx = userFull.indexOf(":");
+    if (dotIdx !== -1 && colonIdx !== -1) {
+      user = userFull.slice(0, dotIdx);
+      agent = parseInt(userFull.slice(dotIdx + 1, colonIdx));
+      device = parseInt(userFull.slice(colonIdx + 1));
+    } else if (dotIdx !== -1) {
+      user = userFull.slice(0, dotIdx);
+      device = parseInt(userFull.slice(dotIdx + 1));
+    }
+
+    return Buffer.concat([
+      Buffer.from([BinaryToken.ADJID, agent, device]),
+      encodeString(user)
+    ]);
+  }
+
+  // JIDPair: user@server (usually for g.us)
+  const chunks: Uint8Array[] = [Buffer.from([BinaryToken.JIDPair])];
+  if (userFull) {
+    chunks.push(encodeString(userFull));
+  } else {
+    chunks.push(Buffer.from([BinaryToken.ListEmpty]));
+  }
+  chunks.push(encodeString(server));
+  return Buffer.concat(chunks);
 }

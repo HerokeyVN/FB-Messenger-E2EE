@@ -48,13 +48,13 @@ const client = new FBClient({
   platform: "facebook"
 });
 
-// 1. Connect to Facebook
+//Connect to Facebook
 await client.connect();
 
-// 2. Enable E2EE (Required for encrypted chats)
+//Enable E2EE (Required for encrypted chats)
 await client.connectE2EE("./device-store.json", client.userId);
 
-// 3. Listen for events
+// Listen for events
 client.onEvent("message", (event) => {
   console.log(`Received message from ${event.senderID}: ${event.body}`);
   
@@ -63,7 +63,7 @@ client.onEvent("message", (event) => {
   }
 });
 
-// 4. Send an E2EE message
+// Send an E2EE message
 await client.sendMessage({
   body: "Hello from the secure side!",
   threadID: "1234567890"

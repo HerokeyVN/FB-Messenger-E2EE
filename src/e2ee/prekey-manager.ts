@@ -93,40 +93,14 @@ export function buildPreKeyBundle(raw: RawPreKeyBundle): PreKeyBundle {
   // Otherwise generate a dummy Kyber key and sign it with a new ephemeral identity
   // key just to satisfy the API. This is safe for Messenger since the server
   // never sends Kyber material and the recipient won't verify it.
-  let kyberPub: import("@signalapp/libsignal-client").KEMPublicKey;
-  let kyberSig: Uint8Array;
-  let kyberKeyId: number;
+  let kyberPub: import("@signalapp/libsignal-client").KEMPublicKey | null = null;
+  let kyberSig: Uint8Array | null = null;
+  let kyberKeyId: number | null = null;
 
   if (raw.kyberPreKey) {
     kyberPub = KEMPublicKey.deserialize(u8(raw.kyberPreKey.publicKey));
     kyberSig = u8(raw.kyberPreKey.signature);
     kyberKeyId = raw.kyberPreKey.keyId;
-  } else {
-    // No Kyber data from server (Messenger) - generate dummy and self-sign.
-    // We use a freshly generated ephemeral identity to sign since we don’t
-    // have the recipient’s private identity key.
-    const dummyKyber = KEMKeyPair.generate();
-    const ephemeralPriv = PrivateKey.generate();
-    kyberPub = dummyKyber.getPublicKey();
-    kyberSig = u8(ephemeralPriv.sign(kyberPub.serialize()));
-    kyberKeyId = 1;
-    // Note: processPreKeyBundle verifies kyber sig against identityKey, so this
-    // will fail validation. We need a different approach for no-Kyber bundles.
-    // See comment below - we use the recipient’s identity key bytes to sign.
-    //
-    // WORKAROUND: We can’t sign with recipient’s private key. Instead, provide
-    // a dedicated dummy Kyber identity priv for signing, and override identityKey
-    // in the bundle with our dummy pub. But that breaks identity verification.
-    //
-    // ACTUAL FIX: Callers must provide kyberPreKey when they have access to the
-    // recipient’s private key (e.g., in tests). For production Messenger, the
-    // server response will include kyber_prekey fields even if they’re dummy.
-    // For now, throw an error to force callers to provide kyber data.
-    throw new Error(
-      "buildPreKeyBundle: kyberPreKey field required in libsignal 0.92. " +
-      "For Messenger (no Kyber), callers must generate a dummy KEMKeyPair, " +
-      "sign it with the recipient’s identity private key, and include it in RawPreKeyBundle."
-    );
   }
 
   if (raw.preKey) {
@@ -140,9 +114,9 @@ export function buildPreKeyBundle(raw: RawPreKeyBundle): PreKeyBundle {
       spkPub,
       u8(raw.signedPreKey.signature),
       identityKey,
-      kyberKeyId,
-      kyberPub,
-      u8(kyberSig),
+      kyberKeyId as any,
+      kyberPub as any,
+      kyberSig as any,
     );
   }
 
@@ -155,9 +129,9 @@ export function buildPreKeyBundle(raw: RawPreKeyBundle): PreKeyBundle {
     spkPub,
     u8(raw.signedPreKey.signature),
     identityKey,
-    kyberKeyId,
-    kyberPub,
-    u8(kyberSig),
+    kyberKeyId as any,
+    kyberPub as any,
+    kyberSig as any,
   );
 }
 

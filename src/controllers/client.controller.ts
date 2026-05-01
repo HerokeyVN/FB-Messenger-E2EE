@@ -1,15 +1,12 @@
 import { EventEmitter } from "node:events";
+import { createHash, randomUUID } from "node:crypto";
 import type { FCAApi } from "fca-unofficial";
 
-import type {
-  MessengerEvent,
-  MessengerMessage,
-  Thread,
-  UserInfo,
-} from "../models/domain.ts";
+import type { MessengerEvent } from "../models/domain.ts";
 import {
   unmarshal,
   buildUnifiedSessionId,
+  encodeKeepAlive,
   encodePresenceAvailable,
   encodePrimingNode,
   encodeSetPassive,
@@ -45,12 +42,10 @@ import type {
   ChangeAdminStatusInput,
   CreatePollInput,
   EditMessageInput,
-  EditMessageResult,
   ForwardAttachmentInput,
   GetThreadHistoryInput,
   GetThreadListInput,
   RemoveGroupMemberInput,
-  ThreadDetails,
 } from "../models/thread.ts";
 import { ThreadService } from "../services/thread.service.ts";
 
@@ -147,6 +142,12 @@ export class ClientController {
   }
 
   // E2EE
+
+  public async sendNoiseKeepAlive(): Promise<void> {
+    if (!this.e2eeSocket) throw new Error("E2EE not connected");
+    const id = (now() % 1000).toString();
+    await this.e2eeSocket.sendFrame(encodeKeepAlive(id));
+  }
 
   public async connectE2EE(deviceStorePath: string, userId: string): Promise<void> {
     const ds = await DeviceStore.fromFile(deviceStorePath);
@@ -285,10 +286,7 @@ export class ClientController {
     this.stopHeartbeat();
     this.heartbeatInterval = setInterval(async () => {
       if (!this.e2eeSocket) return;
-      const { encodeKeepAlive } = await import("../e2ee/wa-binary.ts");
-      const id = (now() % 1000).toString();
-      const keepAliveBuf = encodeKeepAlive(id);
-      await this.e2eeSocket.sendFrame(keepAliveBuf);
+      await this.sendNoiseKeepAlive();
     }, 30000);
   }
 
@@ -366,13 +364,16 @@ export class ClientController {
   // Messaging delegate methods
 
   public async sendMessage(input: SendMessageInput): Promise<Record<string, unknown>> {
-    if (this.e2eeConnected && (/^\d+$/.test(input.threadId) || input.threadId.includes("@msgr"))) {
-      try {
+    const isE2EE = /^\d+$/.test(input.threadId) || input.threadId.includes("@msgr") || input.threadId.includes("@g.us") || input.threadId.includes(".g.");
+    const isGroup = input.threadId.includes("@g.us") || input.threadId.includes(".g.");
+
+    if (this.e2eeConnected && isE2EE) {
+      if (isGroup) {
+        await this.sendE2EEGroupText(input.threadId, input.text, input.replyToMessageId);
+      } else {
         await this.sendE2EEText(input.threadId, input.text, input.replyToMessageId);
-        return { messageId: `e2ee-${now()}`, timestampMs: now() };
-      } catch (err) {
-        logger.warn("ClientController", "E2EE send failed, fallback:", (err as Error).message);
       }
+      return { messageId: `e2ee-${now()}`, timestampMs: now() };
     }
     return this.messagingService.sendText(this.requireApi(), input);
   }
@@ -400,6 +401,98 @@ export class ClientController {
 
     const { marshal: m } = await import("../e2ee/wa-binary.ts");
     await this.e2eeSocket.sendFrame(m(msgNode));
+  }
+
+  public async sendE2EEGroupText(groupJid: string, text: string, replyToMessageId?: string): Promise<void> {
+    if (!this.e2eeSocket) throw new Error("E2EE not connected");
+    const e2eeClient = this.e2eeService.getClient();
+    const selfJid = this.userId + ".0@msgr";
+
+    // Fetch group participants
+    logger.debug("ClientController", `Fetching participants for group: ${groupJid}`);
+    const memberJids = await this.e2eeHandler.getGroupParticipants(groupJid);
+    
+    // Fetch device list for all members
+    logger.debug("ClientController", `Fetching devices for ${memberJids.length} members`);
+    const deviceJids = await this.e2eeHandler.getDeviceList(memberJids);
+    const messageId = String(BigInt(Math.floor(Math.random() * 1e15)));
+
+    // Encrypt the main group payload
+    const result = await e2eeClient.encryptGroupText(
+      groupJid,
+      selfJid,
+      text,
+      messageId,
+      replyToMessageId,
+      undefined
+    );
+
+    // Distribute SKDM to all devices
+    const participantNodes: Buffer[] = [];
+    const { encodeNode, marshal: m } = await import("../e2ee/wa-binary.ts");
+
+    for (const deviceJid of deviceJids) {
+      if (deviceJid === selfJid) continue;
+
+      try {
+        // Establish session if missing
+        if (!(await e2eeClient.hasSession(deviceJid))) {
+          logger.info("ClientController", `Establishing new session with ${deviceJid}`);
+          const bundle = await this.e2eeHandler.getPreKeyBundle(deviceJid);
+          await e2eeClient.establishSession(deviceJid, bundle);
+        }
+
+        const selfUser = selfJid.split("@")[0]?.split(".")[0]?.split(":")[0];
+        const deviceUser = deviceJid.split("@")[0]?.split(".")[0]?.split(":")[0];
+        const payload = selfUser && deviceUser && selfUser === deviceUser
+          ? result.selfDevicePayload
+          : result.devicePayload;
+        const skdmEnc = await e2eeClient.encryptDevicePayload(deviceJid, selfJid, payload);
+
+        participantNodes.push(encodeNode("to", { jid: deviceJid }, [
+          encodeNode("enc", { v: "3", type: skdmEnc.type }, skdmEnc.ciphertext)
+        ]));
+      } catch (err) {
+        logger.error("ClientController", `Failed to distribute SKDM to ${deviceJid}:`, err);
+      }
+    }
+
+    const phash = this.buildParticipantListHash(deviceJids);
+    const participantsNode = encodeNode("participants", {}, participantNodes);
+    const frankingNode = encodeNode("franking", {}, [
+      encodeNode("franking_tag", {}, result.frankingTag),
+    ]);
+    const traceNode = encodeNode("trace", {}, [
+      encodeNode("request_id", {}, Buffer.from(randomUUID().replace(/-/g, ""), "hex")),
+    ]);
+    const skmsgNode = encodeNode("enc", { v: "3", type: "skmsg" }, result.groupCiphertext);
+    
+    const msgNode = encodeNode("message", { to: groupJid, type: "text", id: messageId, phash }, [
+      participantsNode,
+      frankingNode,
+      traceNode,
+      skmsgNode
+    ]);
+
+    await this.e2eeSocket.sendFrame(m(msgNode));
+    logger.info("ClientController", `E2EE Group message sent to ${groupJid} with ${participantNodes.length} devices`);
+  }
+
+  private buildParticipantListHash(participants: string[]): string {
+    const sorted = [...participants].map((jid) => this.toAdString(jid)).sort();
+    const hash = createHash("sha256").update(sorted.join("")).digest();
+    return `2:${hash.subarray(0, 6).toString("base64").replace(/=+$/, "")}`;
+  }
+
+  private toAdString(jid: string): string {
+    const [userPart = "", server = ""] = jid.split("@");
+    const [userAndAgent = "", devicePart = ""] = userPart.split(":");
+    const [user = "", rawAgentPart = ""] = userAndAgent.split(".");
+
+    const rawAgent = rawAgentPart ? Number(rawAgentPart) : 0;
+    const device = devicePart ? Number(devicePart) : 0;
+    if (!user) return jid;
+    return `${user}.${rawAgent}:${device}@${server}`;
   }
 
   public async sendReaction(input: SendReactionInput): Promise<void> { await this.messagingService.react(this.requireApi(), input); }

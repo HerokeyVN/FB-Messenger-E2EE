@@ -21,17 +21,16 @@ import {
   processSenderKeyDistributionMessage,
   SenderKeyMessage,
 } from "@signalapp/libsignal-client";
+import { randomUUID } from "node:crypto";
 
 import type { DeviceStore } from "./device-store.ts";
 import type { RawPreKeyBundle } from "./prekey-manager.ts";
 import { buildPreKeyBundle } from "./prekey-manager.ts";
 import {
-  stableDistributionId,
-  getMockPrivateKey,
   wrapAsSignalSKMSG,
   parseFBProtobufSKMSG,
+  stableDistributionId,
   uuidStringify,
-  parseFBProtobufSKDM
 } from "./facebook-protocol-utils.ts";
 import { logger } from "../utils/logger.ts";
 
@@ -47,15 +46,17 @@ const u8 = (b: Uint8Array | undefined | null): Buffer => {
 // Address helpers
 
 /**
- * Build a ProtocolAddress from a JID string.
- * Format: "userId:deviceId@server" or "userId@server" (deviceId defaults to 1)
+ * Build a ProtocolAddress from a Messenger/WhatsApp JID string.
+ * Format: "user.agent:device@server" or "user.agent@server".
+ * The agent suffix is part of the Signal user ID; the device suffix is the Signal device ID.
  */
 export function jidToAddress(jid: string): ProtocolAddress {
   const [userPart] = jid.split("@");
-  const parts = (userPart ?? jid).split(".");
-  const user = parts[0] ?? jid;
-  const device = parts[1] ? Number(parts[1]) : 1;
-  return ProtocolAddress.new(user, device);
+  const [userAndAgent = jid, rawDevicePart = ""] = (userPart ?? jid).split(":");
+  const [user = jid, rawAgentPart = ""] = userAndAgent.split(".");
+  const signalUser = rawAgentPart ? `${user}_${rawAgentPart}` : user;
+  const device = rawDevicePart ? Number(rawDevicePart) : 0;
+  return ProtocolAddress.new(signalUser, device);
 }
 
 export function addressToJidKey(addr: ProtocolAddress): string {
@@ -117,7 +118,7 @@ export async function createSenderKeyDistributionMessage(
   groupJid: string,
   senderJid: string,
 ): Promise<{ skdm: SenderKeyDistributionMessage; distributionId: string }> {
-  const distributionId = stableDistributionId(groupJid, senderJid);
+  const distributionId = randomUUID();
   const senderAddr = jidToAddress(senderJid);
   const skdm = await SenderKeyDistributionMessage.create(senderAddr, distributionId, store as any);
   return { skdm, distributionId };
@@ -136,47 +137,20 @@ export async function processSKDM(
   const senderAddr = jidToAddress(senderJid);
   const buf = u8(skdmBytes as Buffer);
 
-  // Facebook-style signature-less SKDM (version 0x33)
-  if (buf[0] === 0x33) {
-    let distributionId: string;
-    let chainId: number = 0;
-    let iteration: number = 0;
-    let chainKey: Buffer = Buffer.alloc(0);
-
-    if (buf.length === 53) {
-      // Legacy Binary FB SKDM
-      logger.debug("signal-manager", `Processing Legacy FB SKDM: len=${buf.length}`);
-      distributionId = uuidStringify(buf.slice(1, 17));
-      chainId = buf.readUInt32BE(17);
-      chainKey = buf.slice(21, 53);
-    } else {
-      // Protobuf FB SKDM
-      const parsed = parseFBProtobufSKDM(buf.slice(1));
-      if (!parsed) throw new Error("Failed to parse Facebook Protobuf SKDM");
-      chainId = parsed.chainId;
-      iteration = parsed.iteration;
-      chainKey = parsed.chainKey;
-      distributionId = stableDistributionId(groupJid || "unknown", senderJid);
-    }
-
-    logger.debug("signal-manager", `Processing FB SKDM: distId=${distributionId}, chainId=${chainId}, iter=${iteration}`);
-
-    // We MUST use the Mock Public Key to verify spoofed SKMSG signatures later
-    const signalPk = getMockPrivateKey(senderJid).getPublicKey();
-
-    const skdm = (SenderKeyDistributionMessage as any)._new(
-      3, // version
-      distributionId,
-      chainId,
-      iteration,
-      chainKey,
-      signalPk
-    );
-    await processSenderKeyDistributionMessage(senderAddr, skdm, store as any);
-  } else {
-    // Normal Signal SKDM
+  // Try the standard libsignal format first. Facebook captures we have so far
+  // use the same 0x33-prefixed serialized message, so we should not invent our
+  // own distribution ID or signing key when the library can parse it directly.
+  try {
     const skdm = SenderKeyDistributionMessage.deserialize(buf);
     await processSenderKeyDistributionMessage(senderAddr, skdm, store as any);
+    return;
+  } catch (primaryErr) {
+    if (buf[0] === 0x33 && buf.length > 1) {
+      const skdm = SenderKeyDistributionMessage.deserialize(buf.slice(1));
+      await processSenderKeyDistributionMessage(senderAddr, skdm, store as any);
+      return;
+    }
+    throw primaryErr;
   }
 }
 
@@ -186,11 +160,36 @@ export async function encryptGroup(
   groupJid: string,
   senderJid: string,
   plaintext: Uint8Array,
+  distributionId?: string,
 ): Promise<Uint8Array> {
-  const distributionId = stableDistributionId(groupJid, senderJid);
+  const activeDistributionId = distributionId ?? randomUUID();
   const senderAddr = jidToAddress(senderJid);
-  const cipherMsg = await groupEncrypt(senderAddr, distributionId, store as any, u8(plaintext));
-  return cipherMsg.serialize();
+  const cipherMsg = await groupEncrypt(senderAddr, activeDistributionId, store as any, u8(plaintext));
+  const buf = u8(cipherMsg.serialize());
+  // If this is a Facebook-style SKMSG (0x33 prefix, signature-less), re-wrap into
+  // a Signed Signal SKMSG so it matches whatsmeow's SignedSerialize() output.
+  if (buf && buf.length > 0 && buf[0] === 0x33) {
+    try {
+      // Try protobuf-style FB SKMSG first
+      const parsed = parseFBProtobufSKMSG(buf.slice(1));
+      if (parsed) {
+        const wrapped = wrapAsSignalSKMSG({ distributionId: activeDistributionId, id: parsed.id, iteration: parsed.iteration, ciphertext: parsed.ciphertext, senderJid });
+        return wrapped;
+      }
+      // Fallback: legacy binary FB SKMSG (distributionId(16) | id(4) | ct...)
+      if (buf.length >= 21 && buf[1] !== 0x08) {
+        const distId = uuidStringify(buf.slice(1, 17));
+        const id = buf.readUInt32BE(17);
+        const iteration = 0;
+        const ct = buf.slice(21);
+        const wrapped = wrapAsSignalSKMSG({ distributionId: distId, id, iteration, ciphertext: ct, senderJid });
+        return wrapped;
+      }
+    } catch (e) {
+      // fallback to raw buf
+    }
+  }
+  return buf;
 }
 
 /** Decrypt a group SenderKeyMessage. */

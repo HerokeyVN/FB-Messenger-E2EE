@@ -403,14 +403,19 @@ export function encodeMessageApplication(
   const subProtocol = new ProtoWriter()
     .bytes(1, consumerAppBytes)
     .varint(2, FB_CONSUMER_MESSAGE_VERSION)
-    .varint(3, 0) // FutureProof = PLACEHOLDER
     .build();
 
-  // MessageApplication_Payload_SubProtocol { consumerMessage = subProtocol }
-  const payloadSubProto = new ProtoWriter().bytes(1, subProtocol).build();
+  // MessageApplication.SubProtocolPayload {
+  //   futureProof = PLACEHOLDER (field 1)
+  //   consumerMessage = WACommon.SubProtocol (field 2)
+  // }
+  const payloadSubProto = new ProtoWriter()
+    .varint(1, 0)
+    .bytes(2, subProtocol)
+    .build();
 
-  // MessageApplication_Payload { subProtocol = payloadSubProto }
-  const appPayload = new ProtoWriter().bytes(1, payloadSubProto).build();
+  // MessageApplication.Payload { subProtocol = payloadSubProto } (field 4)
+  const appPayload = new ProtoWriter().bytes(4, payloadSubProto).build();
 
   // MessageApplication_Metadata { frankingKey=8, frankingVersion=9, quotedMessage=10 }
   let metadataWriter = new ProtoWriter()
@@ -480,6 +485,14 @@ export function encodeMessageTransport(opts: MessageTransportOptions): Buffer {
       .bytes(2, opts.skdm.skdmBytes)
       .build();
     ancillary = ancillary.bytes(2, skdmMsg);
+  }
+  if (opts.backupDirective) {
+    const actionType = opts.backupDirective.actionType === "REMOVE" ? 1 : 0;
+    const backupDirectiveMsg = new ProtoWriter()
+      .string(1, opts.backupDirective.messageId)
+      .varint(2, actionType)
+      .build();
+    ancillary = ancillary.bytes(4, backupDirectiveMsg);
   }
   // BackupDirective - UPSERT by default (field 4)
   // Omitted for now; can be added later

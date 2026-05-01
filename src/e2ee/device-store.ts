@@ -72,6 +72,8 @@ export class DeviceStore
   public jidDevice?: number;
 
   public nextPreKeyId: number;
+  // Test helper: when true, skip identity trust checks (TOFU bypass)
+  public autoTrust: boolean = false;
 
   private readonly path: string;
   private onDataChanged?: (json: string) => void;
@@ -287,6 +289,7 @@ export class DeviceStore
     key: PublicKey,
     _direction: Direction,
   ): Promise<boolean> {
+    if (this.autoTrust) return true;
     const addr = name.toString();
     const existing = this.identities.get(addr as ProtocolAddressStr);
     if (existing == null) return true; // First use -> trust on first use (TOFU)
@@ -296,6 +299,7 @@ export class DeviceStore
   async _isTrustedIdentity(name: any, key: any, sending: boolean): Promise<boolean> {
     // Synchronous version for Rust bridge
     const addr = ProtocolAddress._fromNativeHandle(name).toString();
+    if (this.autoTrust) return true;
     const existing = this.identities.get(addr as ProtocolAddressStr);
     if (existing == null) return true;
     const pub = PublicKey._fromNativeHandle(key);

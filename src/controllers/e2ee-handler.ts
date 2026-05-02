@@ -716,6 +716,16 @@ export class E2EEHandler {
       replyToSenderJid: messageApp?.metadata?.quotedMessage?.remoteJID || messageApp?.metadata?.quotedMessage?.participant,
     };
 
+    const applicationData = payload.applicationData;
+    if (applicationData?.revoke) {
+      return {
+        ...common,
+        kind: "revoke",
+        targetId: applicationData.revoke.key?.ID || applicationData.revoke.targetMessageID,
+        fromMe: applicationData.revoke.key?.fromMe,
+      };
+    }
+
     const content = payload.content;
     if (!content) return null;
 

@@ -190,4 +190,63 @@ describe("EventMapper", () => {
     })).not.toThrow();
   });
 
+
+  it("should mark E2EE connected and emit both typed and catch-all events", (done) => {
+    const seen: string[] = [];
+    eventBus.on("e2ee_connected", () => seen.push("typed"));
+    eventBus.on("event", (event) => {
+      if (event.type !== "e2ee_connected") return;
+      seen.push("catch-all");
+      expect(e2eeService.markConnected).toHaveBeenCalledTimes(1);
+      expect(seen).toEqual(["typed", "catch-all"]);
+      done();
+    });
+
+    mapper.emitMappedEvent({ type: "e2eeConnected" });
+  });
+
+  it("should infer E2EE media kind and preserve optional payload fields", (done) => {
+    eventBus.on("e2ee_message", (data) => {
+      expect(data.kind).toBe("image");
+      expect(data.media).toEqual({ type: "image", directPath: "/m" });
+      expect(data.reaction).toBe("🔥");
+      expect(data.targetId).toBe("mid.target");
+      expect(data.fromMe).toBe(true);
+      expect(data.replyTo).toEqual({ messageId: "mid.reply", senderId: "200" });
+      done();
+    });
+
+    mapper.emitMappedEvent({
+      type: "e2ee_message",
+      data: {
+        messageId: "mid.media",
+        chatJid: "100.0@msgr",
+        senderJid: "100.5@msgr",
+        media: { type: "image", directPath: "/m" },
+        emoji: "🔥",
+        targetId: "mid.target",
+        fromMe: true,
+        replyToId: "mid.reply",
+        replyToSenderJid: "200.9@msgr",
+      },
+    });
+  });
+
+  it("should emit typed error events when an error listener exists", (done) => {
+    let catchAllSeen = false;
+    eventBus.on("event", (event) => {
+      if (event.type === "error") catchAllSeen = true;
+    });
+    eventBus.on("error", (data) => {
+      expect(data.message).toBe("boom");
+      expect(catchAllSeen).toBe(false);
+      setImmediate(() => {
+        expect(catchAllSeen).toBe(true);
+        done();
+      });
+    });
+
+    mapper.emit({ type: "error", data: { message: "boom" } });
+  });
+
 });

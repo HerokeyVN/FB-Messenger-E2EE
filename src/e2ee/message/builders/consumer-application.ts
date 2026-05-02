@@ -110,126 +110,152 @@ export class MessageBuilder {
  * Field 1 = Payload { field 1 = Content { field 1 = MessageText { field 1 = text } } }
  */
 export function encodeTextMessage(text: string): Buffer {
-  const msgText = new ProtoWriter().string(1, text).build();
+  const msgText = encodeMessageText(text);
   const content = new ProtoWriter().bytes(1, msgText).build(); // oneof content field 1 = messageText
   const payload = new ProtoWriter().bytes(1, content).build(); // oneof payload field 1 = Content
   return new ProtoWriter().bytes(1, payload).build(); // ConsumerApplication { payload }
 }
 
-/** Encode a ConsumerApplication image message. */
-export function encodeImageMessage(m: MediaFields): Buffer {
-  let w = new ProtoWriter();
-  if (m.caption) w = w.string(1, m.caption);
-  w = w
+function encodeMessageText(text: string): Buffer {
+  return new ProtoWriter().string(1, text).build();
+}
+
+function encodeMediaSubProtocol(payload: Buffer): Buffer {
+  return new ProtoWriter()
+    .bytes(1, payload)
+    .varint(2, 1)
+    .build();
+}
+
+function encodeImageVideoMediaPayload(m: MediaFields): Buffer {
+  let w = new ProtoWriter()
     .string(2, m.mimeType)
     .bytes(3, m.fileSHA256)
-    .uint64(4, BigInt(m.fileLength))
+    .uint64_varint(4, BigInt(m.fileLength))
     .bytes(5, m.mediaKey)
     .bytes(6, m.fileEncSHA256)
     .string(7, m.directPath);
-  if (m.width) w = w.varint(18, m.width);
-  if (m.height) w = w.varint(19, m.height);
-  const imageMsg = w.build();
-  const content = new ProtoWriter().bytes(2, imageMsg).build(); // field 2 = imageMessage
+  if (m.seconds !== undefined) w = w.varint(8, m.seconds);
+  if (m.width !== undefined) w = w.varint(18, m.width);
+  if (m.height !== undefined) w = w.varint(19, m.height);
+  return w.build();
+}
+
+function encodeAudioMediaPayload(m: MediaFields): Buffer {
+  let w = new ProtoWriter()
+    .string(1, m.mimeType)
+    .bytes(2, m.fileSHA256)
+    .uint64_varint(3, BigInt(m.fileLength))
+    .bytes(4, m.mediaKey)
+    .bytes(5, m.fileEncSHA256)
+    .string(6, m.directPath);
+  if (m.seconds !== undefined) w = w.varint(7, m.seconds);
+  return w.build();
+}
+
+function encodeDocumentMediaPayload(m: MediaFields): Buffer {
+  let w = new ProtoWriter()
+    .string(2, m.mimeType)
+    .bytes(4, m.fileSHA256)
+    .uint64_varint(5, BigInt(m.fileLength))
+    .bytes(6, m.mediaKey)
+    .bytes(7, m.fileEncSHA256)
+    .string(8, m.directPath);
+  if (m.fileName) w = w.string(3, m.fileName);
+  return w.build();
+}
+
+function encodeStickerMediaPayload(m: MediaFields): Buffer {
+  let w = new ProtoWriter()
+    .string(1, m.mimeType)
+    .bytes(2, m.fileSHA256)
+    .uint64_varint(3, BigInt(m.fileLength))
+    .bytes(4, m.mediaKey)
+    .bytes(5, m.fileEncSHA256)
+    .string(6, m.directPath);
+  if (m.width !== undefined) w = w.varint(7, m.width);
+  if (m.height !== undefined) w = w.varint(8, m.height);
+  return w.build();
+}
+
+/** Encode a ConsumerApplication image message. */
+export function encodeImageMessage(m: MediaFields): Buffer {
+  let w = new ProtoWriter().bytes(1, encodeMediaSubProtocol(encodeImageVideoMediaPayload(m)));
+  if (m.caption) w = w.bytes(2, encodeMessageText(m.caption));
+  const content = new ProtoWriter().bytes(2, w.build()).build();
   const payload = new ProtoWriter().bytes(1, content).build();
   return new ProtoWriter().bytes(1, payload).build();
 }
 
 /** Encode a ConsumerApplication video message. */
 export function encodeVideoMessage(m: MediaFields): Buffer {
-  let w = new ProtoWriter();
-  if (m.caption) w = w.string(1, m.caption);
-  w = w
-    .string(2, m.mimeType)
-    .bytes(3, m.fileSHA256)
-    .uint64(4, BigInt(m.fileLength))
-    .bytes(5, m.mediaKey)
-    .bytes(6, m.fileEncSHA256)
-    .string(7, m.directPath);
-  if (m.seconds) w = w.varint(8, m.seconds);
-  if (m.width) w = w.varint(18, m.width);
-  if (m.height) w = w.varint(19, m.height);
-  const videoMsg = w.build();
-  const content = new ProtoWriter().bytes(3, videoMsg).build();
+  let w = new ProtoWriter().bytes(1, encodeMediaSubProtocol(encodeImageVideoMediaPayload(m)));
+  if (m.caption) w = w.bytes(2, encodeMessageText(m.caption));
+  const content = new ProtoWriter().bytes(9, w.build()).build();
   const payload = new ProtoWriter().bytes(1, content).build();
   return new ProtoWriter().bytes(1, payload).build();
 }
 
 /** Encode a ConsumerApplication audio/voice message. */
 export function encodeAudioMessage(m: MediaFields): Buffer {
-  let w = new ProtoWriter()
-    .string(1, m.mimeType)
-    .bytes(2, m.fileSHA256)
-    .uint64(3, BigInt(m.fileLength))
-    .bytes(4, m.mediaKey)
-    .bytes(5, m.fileEncSHA256)
-    .string(6, m.directPath);
-  if (m.seconds) w = w.varint(7, m.seconds);
-  if (m.ptt) w = w.bool(8, true);
-  const audioMsg = w.build();
-  const content = new ProtoWriter().bytes(4, audioMsg).build();
+  let w = new ProtoWriter().bytes(1, encodeMediaSubProtocol(encodeAudioMediaPayload(m)));
+  if (m.ptt) w = w.bool(2, true);
+  const content = new ProtoWriter().bytes(8, w.build()).build();
   const payload = new ProtoWriter().bytes(1, content).build();
   return new ProtoWriter().bytes(1, payload).build();
 }
 
 /** Encode a ConsumerApplication document message. */
 export function encodeDocumentMessage(m: MediaFields): Buffer {
-  let w = new ProtoWriter()
-    .string(2, m.mimeType)
-    .bytes(4, m.fileSHA256)
-    .uint64(5, BigInt(m.fileLength))
-    .bytes(6, m.mediaKey)
-    .bytes(7, m.fileEncSHA256)
-    .string(8, m.directPath);
-  if (m.fileName) w = w.string(3, m.fileName);
-  const docMsg = w.build();
-  const content = new ProtoWriter().bytes(5, docMsg).build();
+  let w = new ProtoWriter().bytes(1, encodeMediaSubProtocol(encodeDocumentMediaPayload(m)));
+  if (m.fileName) w = w.string(2, m.fileName);
+  const content = new ProtoWriter().bytes(7, w.build()).build();
   const payload = new ProtoWriter().bytes(1, content).build();
   return new ProtoWriter().bytes(1, payload).build();
 }
 
 /** Encode a ConsumerApplication sticker message. */
 export function encodeStickerMessage(m: MediaFields): Buffer {
-  let w = new ProtoWriter()
-    .string(1, m.mimeType)
-    .bytes(2, m.fileSHA256)
-    .uint64(3, BigInt(m.fileLength))
-    .bytes(4, m.mediaKey)
-    .bytes(5, m.fileEncSHA256)
-    .string(6, m.directPath);
-  if (m.width) w = w.varint(7, m.width);
-  if (m.height) w = w.varint(8, m.height);
-  const stickerMsg = w.build();
-  const content = new ProtoWriter().bytes(6, stickerMsg).build();
+  const stickerMsg = new ProtoWriter()
+    .bytes(1, encodeMediaSubProtocol(encodeStickerMediaPayload(m)))
+    .build();
+  const content = new ProtoWriter().bytes(12, stickerMsg).build();
   const payload = new ProtoWriter().bytes(1, content).build();
   return new ProtoWriter().bytes(1, payload).build();
 }
 
 /** Encode a reaction message. */
 export function encodeReactionMessage(targetMessageId: string, emoji: string): Buffer {
+  const key = new ProtoWriter().string(3, targetMessageId).build();
   const reaction = new ProtoWriter()
-    .string(1, emoji)
-    .string(2, targetMessageId)
-    .uint64(3, BigInt(Date.now()))
+    .bytes(1, key)
+    .string(2, emoji)
+    .uint64_varint(4, BigInt(Date.now()))
     .build();
-  const content = new ProtoWriter().bytes(7, reaction).build();
+  const content = new ProtoWriter().bytes(16, reaction).build();
   const payload = new ProtoWriter().bytes(1, content).build();
   return new ProtoWriter().bytes(1, payload).build();
 }
 
 /** Encode a message edit. */
 export function encodeEditMessage(targetMessageId: string, newText: string): Buffer {
+  const key = new ProtoWriter().string(3, targetMessageId).build();
   const msgText = new ProtoWriter().string(1, newText).build();
-  const edit = new ProtoWriter().string(1, targetMessageId).bytes(2, msgText).build();
-  const content = new ProtoWriter().bytes(8, edit).build();
+  const edit = new ProtoWriter()
+    .bytes(1, key)
+    .bytes(2, msgText)
+    .uint64_varint(3, BigInt(Date.now()))
+    .build();
+  const content = new ProtoWriter().bytes(19, edit).build();
   const payload = new ProtoWriter().bytes(1, content).build();
   return new ProtoWriter().bytes(1, payload).build();
 }
 
 /** Encode a revoke (unsend) message. */
 export function encodeRevokeMessage(messageId: string, fromMe: boolean): Buffer {
-  const key = new ProtoWriter().bool(1, fromMe).string(2, messageId).build();
+  const key = new ProtoWriter().bool(2, fromMe).string(3, messageId).build();
   const revoke = new ProtoWriter().bytes(1, key).build();
-  const payload = new ProtoWriter().bytes(2, revoke).build(); // field 2 = RevokeMessage
+  const applicationData = new ProtoWriter().bytes(1, revoke).build();
+  const payload = new ProtoWriter().bytes(2, applicationData).build();
   return new ProtoWriter().bytes(1, payload).build();
 }

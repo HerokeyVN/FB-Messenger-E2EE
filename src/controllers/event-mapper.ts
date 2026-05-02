@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import type { MessengerEvent, MessengerMessage, Attachment } from "../models/domain.ts";
+import type { MessengerEvent, MessengerMessage, Attachment, E2EEMessage, E2EEMessageKind } from "../models/domain.ts";
 import { str, num, now } from "../utils/fca-utils.ts";
 import type { MediaService } from "../services/media.service.ts";
 import type { E2EEService } from "../services/e2ee.service.ts";
@@ -147,37 +147,55 @@ export class EventMapper {
       const e2eeData = rawEvent.data as any;
       if (!e2eeData) return;
 
-      const chatJid = str(e2eeData.chatJid || e2eeData.threadId);
-      const senderJid = str(e2eeData.senderJid);
-      const senderId = str(e2eeData.senderId) || senderJid.split(".")[0] || senderJid.split("@")[0] || senderJid;
+      const rawChatJid = str(e2eeData.chatJid || e2eeData.threadId);
+      const senderInfo = this.parseMessengerJid(str(e2eeData.senderJid));
+      const senderId = str(e2eeData.senderId) || senderInfo.user || senderInfo.rawUser || senderInfo.jid;
+      const senderJid = this.canonicalMessengerDeviceJid(str(e2eeData.senderJid), senderId, senderInfo.device);
+      const chat = this.normalizeE2EEChat(rawChatJid || senderJid);
 
       if (e2eeData.type === "decryption_failed") {
         this.emit({
           type: "error",
           data: {
-            message: `E2EE decrypt failed${chatJid ? ` in ${chatJid}` : ""}${senderJid ? ` from ${senderJid}` : ""}: ${str(e2eeData.error)}`,
+            message: `E2EE decrypt failed${chat.chatJid ? ` in ${chat.chatJid}` : ""}${senderJid ? ` from ${senderJid}` : ""}: ${str(e2eeData.error)}`,
           },
         });
         return;
       }
 
+      const kind = this.normalizeE2EEKind(e2eeData.kind || e2eeData.type, e2eeData);
+      const data: Record<string, unknown> = {
+        id: str(e2eeData.messageId || e2eeData.messageID),
+        threadId: chat.threadId,
+        chatJid: chat.chatJid,
+        senderJid,
+        senderId,
+        isGroup: chat.isGroup,
+        kind,
+        text: str(e2eeData.text || e2eeData.body || ""),
+        timestampMs: num(e2eeData.timestampMs || e2eeData.timestamp) || now(),
+      };
+
+      if (senderInfo.device > 0) data.senderDeviceId = senderInfo.device;
+      if (Array.isArray(e2eeData.attachments) && e2eeData.attachments.length > 0) data.attachments = e2eeData.attachments;
+      if (Array.isArray(e2eeData.mentions) && e2eeData.mentions.length > 0) data.mentions = e2eeData.mentions;
+      if (e2eeData.media) data.media = e2eeData.media;
+      if (e2eeData.raw) data.raw = e2eeData.raw;
+      if (e2eeData.emoji || e2eeData.reaction) data.reaction = str(e2eeData.emoji || e2eeData.reaction);
+      if (e2eeData.targetId) data.targetId = str(e2eeData.targetId);
+      if (typeof e2eeData.fromMe === "boolean") data.fromMe = e2eeData.fromMe;
+
+      if (e2eeData.replyToId) {
+        const replySender = this.parseMessengerJid(str(e2eeData.replyToSenderJid));
+        data.replyTo = {
+          messageId: str(e2eeData.replyToId),
+          senderId: replySender.user || str(e2eeData.replyToSenderJid),
+        };
+      }
+
       this.emit({
         type: "e2ee_message",
-        data: {
-          id: str(e2eeData.messageId || e2eeData.messageID),
-          threadId: chatJid,
-          chatJid,
-          senderJid,
-          senderId,
-          text: str(e2eeData.text || e2eeData.body || e2eeData.error || ""),
-          timestampMs: num(e2eeData.timestampMs || e2eeData.timestamp) || now(),
-          attachments: Array.isArray(e2eeData.attachments) ? e2eeData.attachments : undefined,
-          mentions: Array.isArray(e2eeData.mentions) ? e2eeData.mentions : undefined,
-          replyTo: e2eeData.replyToId ? {
-            messageId: str(e2eeData.replyToId),
-            senderId: str(e2eeData.replyToSenderJid),
-          } : undefined,
-        }
+        data: data as unknown as E2EEMessage,
       });
       return;
     }
@@ -211,6 +229,64 @@ export class EventMapper {
 
     // Raw fallback
     this.emit({ type: "raw", data: rawEvent });
+  }
+
+  private normalizeE2EEKind(value: unknown, data: Record<string, unknown>): E2EEMessageKind {
+    const kind = str(value);
+    if (this.isE2EEMessageKind(kind)) return kind;
+    if (data.media && typeof data.media === "object" && data.media !== null) {
+      const mediaType = str((data.media as Record<string, unknown>).type);
+      if (this.isE2EEMessageKind(mediaType)) return mediaType;
+    }
+    if (str(data.text || data.body)) return "text";
+    return "unknown";
+  }
+
+  private isE2EEMessageKind(value: string): value is E2EEMessageKind {
+    return ["text", "image", "video", "audio", "document", "sticker", "reaction", "edit", "revoke", "unknown"].includes(value);
+  }
+
+  private normalizeE2EEChat(jid: string): { threadId: string; chatJid: string; isGroup: boolean } {
+    if (!jid) return { threadId: "", chatJid: "", isGroup: false };
+    if (this.isGroupJid(jid)) return { threadId: jid, chatJid: jid, isGroup: true };
+
+    const parsed = this.parseMessengerJid(jid);
+    if (parsed.server === "msgr" && parsed.user) {
+      return {
+        threadId: parsed.user,
+        chatJid: `${parsed.user}.0@msgr`,
+        isGroup: false,
+      };
+    }
+
+    if (/^\d+$/.test(jid)) {
+      return { threadId: jid, chatJid: `${jid}.0@msgr`, isGroup: false };
+    }
+
+    return { threadId: jid, chatJid: jid, isGroup: false };
+  }
+
+  private isGroupJid(jid: string): boolean {
+    return jid.endsWith("@g.us") || jid.includes(".g.");
+  }
+
+  private canonicalMessengerDeviceJid(jid: string, fallbackUser: string, fallbackDevice = 0): string {
+    const parsed = this.parseMessengerJid(jid);
+    if (parsed.server === "msgr" && parsed.user) return `${parsed.user}.${parsed.device}@msgr`;
+    if (!jid && fallbackUser) return `${fallbackUser}.${fallbackDevice}@msgr`;
+    return jid;
+  }
+
+  private parseMessengerJid(jid: string): { jid: string; rawUser: string; user: string; device: number; server: string } {
+    const [userPart = jid, server = ""] = jid.split("@");
+    const colonIdx = userPart.indexOf(":");
+    const dotIdx = userPart.indexOf(".");
+    const userEnd = dotIdx !== -1 ? dotIdx : (colonIdx !== -1 ? colonIdx : userPart.length);
+    const user = userPart.slice(0, userEnd) || userPart;
+    const rawDevice = colonIdx !== -1
+      ? userPart.slice(colonIdx + 1)
+      : (dotIdx !== -1 ? userPart.slice(dotIdx + 1) : "0");
+    return { jid, rawUser: userPart, user, device: Number(rawDevice) || 0, server };
   }
 
   public emit(event: MessengerEvent): void {

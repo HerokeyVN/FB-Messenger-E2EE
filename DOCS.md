@@ -218,9 +218,33 @@ client.onEvent((event) => {
 
 ```typescript
 client.onEvent("e2ee_message", (msg) => {
-  console.log(msg.chatJid, msg.senderJid, msg.text);
+  console.log(msg.threadId, msg.chatJid, msg.senderJid, msg.kind, msg.text);
 });
 ```
+
+### E2EE message event shape
+
+`e2ee_message` uses `type + data` like other events, but `data` separates conversation identity from sender device identity:
+
+```typescript
+{
+  type: "e2ee_message",
+  data: {
+    id: "7456191609143713633",
+    threadId: "100042415119261",
+    chatJid: "100042415119261.0@msgr",
+    senderJid: "100042415119261.160@msgr",
+    senderId: "100042415119261",
+    senderDeviceId: 160,
+    isGroup: false,
+    kind: "text",
+    text: "Hehe",
+    timestampMs: 1777694609888,
+  },
+}
+```
+
+For group messages, `threadId` and `chatJid` stay as the group JID, while `senderJid` remains the actual sender device JID. Optional fields such as `attachments`, `mentions`, and `replyTo` are omitted when empty.
 
 Common event types:
 

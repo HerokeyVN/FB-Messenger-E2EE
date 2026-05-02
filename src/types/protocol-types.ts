@@ -3,8 +3,12 @@
  */
 
 export interface E2EEMessagePayload {
-  type: "text" | "media" | "decryption_failed";
+  kind?: "text" | "image" | "video" | "audio" | "document" | "sticker" | "reaction" | "edit" | "revoke" | "unknown";
+  type?: "text" | "media" | "decryption_failed";
   senderJid: string;
+  senderId?: string;
+  senderDeviceId?: number;
+  chatJid?: string;
   messageId: string;
   timestampMs: number;
   text?: string;

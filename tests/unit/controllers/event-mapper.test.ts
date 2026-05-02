@@ -117,6 +117,61 @@ describe("EventMapper", () => {
 
     mapper.emitMappedEvent(raw);
   });
+
+  it("should normalize E2EE message identity and omit empty optional fields", (done) => {
+    eventBus.on("e2ee_message", (data) => {
+      expect(data.id).toBe("7456191609143713633");
+      expect(data.threadId).toBe("100042415119261");
+      expect(data.chatJid).toBe("100042415119261.0@msgr");
+      expect(data.senderJid).toBe("100042415119261.160@msgr");
+      expect(data.senderId).toBe("100042415119261");
+      expect(data.senderDeviceId).toBe(160);
+      expect(data.isGroup).toBe(false);
+      expect(data.kind).toBe("text");
+      expect(data.text).toBe("Hehe");
+      expect(Object.prototype.hasOwnProperty.call(data, "attachments")).toBe(false);
+      expect(Object.prototype.hasOwnProperty.call(data, "mentions")).toBe(false);
+      expect(Object.prototype.hasOwnProperty.call(data, "replyTo")).toBe(false);
+      done();
+    });
+
+    mapper.emitMappedEvent({
+      type: "e2ee_message",
+      data: {
+        messageId: "7456191609143713633",
+        chatJid: "100042415119261.160@msgr",
+        senderJid: "100042415119261.160@msgr",
+        kind: "text",
+        text: "Hehe",
+        timestampMs: 1777694609888,
+      },
+    });
+  });
+
+  it("should preserve group chat JID and sender device for E2EE group messages", (done) => {
+    eventBus.on("e2ee_message", (data) => {
+      expect(data.threadId).toBe("1805602490133470@g.us");
+      expect(data.chatJid).toBe("1805602490133470@g.us");
+      expect(data.senderJid).toBe("100042415119261.101@msgr");
+      expect(data.senderId).toBe("100042415119261");
+      expect(data.senderDeviceId).toBe(101);
+      expect(data.isGroup).toBe(true);
+      expect(data.kind).toBe("text");
+      done();
+    });
+
+    mapper.emitMappedEvent({
+      type: "e2ee_message",
+      data: {
+        messageId: "m1",
+        chatJid: "1805602490133470@g.us",
+        senderJid: "100042415119261.101@msgr",
+        type: "text",
+        text: "hello group",
+      },
+    });
+  });
+
   it("should route E2EE decrypt failures through catch-all without unhandled error", (done) => {
     eventBus.on("event", (event) => {
       expect(event.type).toBe("error");

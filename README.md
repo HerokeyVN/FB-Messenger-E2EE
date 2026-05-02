@@ -59,7 +59,7 @@ client.onEvent((event) => {
   }
 
   if (event.type === "e2ee_message") {
-    console.log(`[E2EE] ${event.data.senderJid}: ${event.data.text}`);
+    console.log(`[E2EE] ${event.data.threadId} ${event.data.senderJid}: ${event.data.text}`);
   }
 
   if (event.type === "error") {
@@ -92,6 +92,14 @@ Configurable environment variables:
 | `FB_E2EE_PREKEY_UPLOAD_COUNT` | `50` | Number of fresh one-time prekeys to upload per refill. |
 
 Group decrypt note: if local `sender_keys` for a group/sender are truly missing, the client cannot derive that key locally. On retryable decrypt failures it sends an E2EE retry receipt to request a resend/SKDM from the sender/server. The send path also keeps a short in-memory retry cache so incoming `receipt type="retry"` requests for recently-sent messages can be re-encrypted directly to the requesting device. This is different from prekey exhaustion.
+
+E2EE event identity model:
+
+- `threadId`: stable conversation ID. For DMs this is the bare Facebook user ID; for groups it is the group JID.
+- `chatJid`: canonical E2EE chat JID. For DMs this is `user.0@msgr`; for groups it is `group@g.us`.
+- `senderJid`: device-specific sender JID such as `user.160@msgr`.
+- `senderDeviceId`: numeric Messenger E2EE device ID when available.
+- `kind`: normalized content kind (`text`, `image`, `reaction`, `edit`, etc.). Empty optional fields are omitted from the event payload.
 
 ---
 

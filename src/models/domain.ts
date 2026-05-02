@@ -125,18 +125,78 @@ export interface MessengerMessage {
   isAdminMsg?: boolean;
 }
 
-export interface E2EEMessage {
+export type E2EEMessageKind =
+  | "text"
+  | "image"
+  | "video"
+  | "audio"
+  | "document"
+  | "sticker"
+  | "reaction"
+  | "edit"
+  | "revoke"
+  | "unknown";
+
+export interface BaseE2EEMessage {
   id: string;
+  /** Stable conversation ID. For DMs this is the bare Facebook user ID; for groups it is the group JID. */
   threadId: string;
+  /** Canonical E2EE chat JID. For DMs this uses the bare .0 Messenger device; senderJid keeps the actual sender device. */
   chatJid: string;
+  /** Device-specific sender JID, e.g. user.device@msgr. */
   senderJid: string;
+  /** Bare Facebook sender/user ID. */
   senderId: string;
+  senderDeviceId?: number;
+  isGroup: boolean;
+  kind: E2EEMessageKind;
+  /** Text body when present; empty string for non-text E2EE events. */
   text: string;
   timestampMs: number;
   attachments?: Attachment[];
   replyTo?: ReplyTo;
   mentions?: Mention[];
 }
+
+export interface E2EETextMessage extends BaseE2EEMessage {
+  kind: "text";
+  text: string;
+}
+
+export interface E2EEMediaMessage extends BaseE2EEMessage {
+  kind: "image" | "video" | "audio" | "document" | "sticker";
+  media?: unknown;
+}
+
+export interface E2EEReactionMessage extends BaseE2EEMessage {
+  kind: "reaction";
+  reaction: string;
+  targetId?: string;
+}
+
+export interface E2EEEditMessage extends BaseE2EEMessage {
+  kind: "edit";
+  targetId?: string;
+}
+
+export interface E2EERevokeMessage extends BaseE2EEMessage {
+  kind: "revoke";
+  targetId?: string;
+  fromMe?: boolean;
+}
+
+export interface E2EEUnknownMessage extends BaseE2EEMessage {
+  kind: "unknown";
+  raw?: unknown;
+}
+
+export type E2EEMessage =
+  | E2EETextMessage
+  | E2EEMediaMessage
+  | E2EEReactionMessage
+  | E2EEEditMessage
+  | E2EERevokeMessage
+  | E2EEUnknownMessage;
 
 // Input types - messaging
 

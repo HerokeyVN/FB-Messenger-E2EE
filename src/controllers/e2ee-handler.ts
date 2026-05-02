@@ -704,7 +704,7 @@ export class E2EEHandler {
   private normalizeE2EEMessage(appMessage: any, senderJid: string, chatJid: string, messageId: string, messageApp?: any): any {
     const payload = appMessage?.payload;
     if (!payload) return null;
-    const senderId = senderJid.split(".")[0];
+    const senderId = this.parseMessengerJid(senderJid).user;
     const common = {
       chatJid: chatJid,
       senderJid: senderJid,
@@ -719,18 +719,18 @@ export class E2EEHandler {
     const content = payload.content;
     if (!content) return null;
 
-    if (content.messageText) return { ...common, type: "text", text: content.messageText.text };
-    if (content.extendedTextMessage) return { ...common, type: "text", text: content.extendedTextMessage.text?.text, extended: content.extendedTextMessage };
-    if (content.imageMessage) return { ...common, type: "image", media: content.imageMessage };
-    if (content.videoMessage) return { ...common, type: "video", media: content.videoMessage };
-    if (content.audioMessage) return { ...common, type: "audio", media: content.audioMessage };
-    if (content.documentMessage) return { ...common, type: "document", media: content.documentMessage };
-    if (content.stickerMessage) return { ...common, type: "sticker", media: content.stickerMessage };
+    if (content.messageText) return { ...common, kind: "text", text: content.messageText.text };
+    if (content.extendedTextMessage) return { ...common, kind: "text", text: content.extendedTextMessage.text?.text, extended: content.extendedTextMessage };
+    if (content.imageMessage) return { ...common, kind: "image", media: content.imageMessage };
+    if (content.videoMessage) return { ...common, kind: "video", media: content.videoMessage };
+    if (content.audioMessage) return { ...common, kind: "audio", media: content.audioMessage };
+    if (content.documentMessage) return { ...common, kind: "document", media: content.documentMessage };
+    if (content.stickerMessage) return { ...common, kind: "sticker", media: content.stickerMessage };
 
     if (content.reactionMessage) {
       return {
         ...common,
-        type: "reaction",
+        kind: "reaction",
         emoji: content.reactionMessage.text,
         targetId: content.reactionMessage.key?.ID || content.reactionMessage.targetMessageID
       };
@@ -739,7 +739,7 @@ export class E2EEHandler {
     if (content.editMessage) {
       return {
         ...common,
-        type: "edit",
+        kind: "edit",
         text: content.editMessage.message?.text || content.editMessage.messageText?.text,
         targetId: content.editMessage.key?.ID || content.editMessage.targetMessageID
       };
@@ -748,12 +748,12 @@ export class E2EEHandler {
     if (content.revokeMessage) {
       return {
         ...common,
-        type: "revoke",
+        kind: "revoke",
         targetId: content.revokeMessage.key?.ID || content.revokeMessage.targetMessageID,
         fromMe: content.revokeMessage.key?.fromMe
       };
     }
 
-    return { ...common, type: "unknown", raw: content };
+    return { ...common, kind: "unknown", raw: content };
   }
 }

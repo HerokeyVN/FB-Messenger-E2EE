@@ -53,7 +53,7 @@ async function main() {
     console.log("test-group-send", `E2EE Stream active. Waiting for messages...`);
 
     const targetGroupJid = process.env.TEST_GROUP_JID ?? "1805602490133470@g.us";
-    const text = process.env.TEST_MESSAGE_TEXT ?? "capture sample from whatsmeow";
+    const text = process.env.TEST_MESSAGE_TEXT ?? "capture sample from e2ee";
     const echoPromise = new Promise<void>((resolve) => {
       client.onEvent("e2ee_message", (event) => {
         const threadId = (event as any).threadId ?? (event as any).threadID;

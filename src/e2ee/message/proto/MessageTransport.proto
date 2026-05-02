@@ -3,7 +3,6 @@ package waMsgTransport;
 option java_package = "com.whatsapp.proto";
 
 // Outer transport wrapper - this is what gets encrypted by Signal cipher
-// Reference: whatsmeow/proto/waMsgTransport/
 
 message WAMediaTransport {
   message Integral {

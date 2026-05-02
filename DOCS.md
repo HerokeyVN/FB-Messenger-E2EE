@@ -271,17 +271,29 @@ Common event types:
 
 ## E2EE Technical Details
 
+### Internal module layout
+
+- `src/e2ee/application`: `E2EEClient`, retry manager, prekey maintenance, outbound retry cache, fanout/JID helpers.
+- `src/e2ee/store`: `DeviceStore`, JSON schema/migration helpers, file repository.
+- `src/e2ee/transport`: Noise socket/handshake, WA-binary encoder/decoder/stanzas, optional DGW socket.
+- `src/e2ee/signal`: Signal sessions, prekeys, sender-key group cipher helpers.
+- `src/e2ee/message`: `ProtoWriter`, client/consumer/application/transport builders, protobuf codecs/schemas.
+- `src/e2ee/media` and `src/e2ee/facebook`: media crypto/upload and Facebook-specific protocol helpers.
+
+Legacy `src/e2ee/*.ts` shim files still re-export the new modules for compatibility.
+
 ### Receive path
 
 1. `FacebookE2EESocket` decrypts Noise frames.
 2. `ClientController` unmarshals WA-binary nodes.
 3. `E2EEHandler` ACKs, processes participant SKDM/direct participant payloads, decrypts `msg` / `pkmsg` / `skmsg`, decodes protobuf payloads, and emits normalized events.
-4. Decrypt failures emit an `error` event rather than terminating the listener loop.
+4. Retryable decrypt failures emit an `error` event and send an E2EE retry receipt rather than terminating the listener loop.
 
 ### Send path
 
 - DM: build MessageTransport, establish/fetch sessions when needed, fan out encrypted device payloads.
 - Group: fetch participants/devices, build group `skmsg`, distribute `skdm` to devices through `<participants>`, include `phash`, `franking`, and `trace` nodes.
+- Outgoing E2EE payloads are cached briefly by `OutboundMessageCache`; `E2EERetryManager` uses that cache to respond to `receipt type="retry"` without re-registering the device.
 
 ### Requirements
 

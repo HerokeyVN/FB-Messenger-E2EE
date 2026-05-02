@@ -1,4 +1,4 @@
-import { DeviceStore } from "../../../src/e2ee/device-store.ts";
+import { DeviceStore } from "../../../src/e2ee/store/device-store.ts";
 import { jest } from "@jest/globals";
 import * as fs from "node:fs";
 import * as path from "node:path";

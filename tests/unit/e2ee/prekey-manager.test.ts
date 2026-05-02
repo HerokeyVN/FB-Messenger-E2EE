@@ -1,5 +1,5 @@
-import { DeviceStore } from "../../../src/e2ee/device-store.ts";
-import { generatePreKeys, generateSignedPreKey, buildPreKeyUploadPayload } from "../../../src/e2ee/prekey-manager.ts";
+import { DeviceStore } from "../../../src/e2ee/store/device-store.ts";
+import { generatePreKeys, generateSignedPreKey, buildPreKeyUploadPayload } from "../../../src/e2ee/signal/prekey-manager.ts";
 import * as path from "node:path";
 import * as os from "node:os";
 import * as fs from "node:fs";

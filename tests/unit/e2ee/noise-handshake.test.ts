@@ -1,4 +1,4 @@
-import { generateX25519, getX25519PublicKey, x25519DH, WA_HEADER } from "../../../src/e2ee/noise-handshake.ts";
+import { generateX25519, getX25519PublicKey, x25519DH, WA_HEADER } from "../../../src/e2ee/transport/noise/noise-handshake.ts";
 
 describe("noise-handshake", () => {
   describe("X25519 helpers", () => {

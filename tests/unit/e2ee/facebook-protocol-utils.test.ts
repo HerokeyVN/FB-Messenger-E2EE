@@ -1,4 +1,4 @@
-import { encodeVarint, decodeVarint, uuidStringify, uuidParse, stableDistributionId } from "../../../src/e2ee/facebook-protocol-utils.ts";
+import { encodeVarint, decodeVarint, uuidStringify, uuidParse, stableDistributionId } from "../../../src/e2ee/facebook/facebook-protocol-utils.ts";
 
 describe("facebook-protocol-utils", () => {
   describe("varint", () => {

@@ -5,7 +5,6 @@
  *   - Upload prekeys to the WhatsApp/Messenger server on registration
  *   - Fetch prekey bundles for recipients before establishing sessions
  *
- * Reference: whatsmeow/prekeys.go
  */
 
 import {
@@ -17,8 +16,8 @@ import {
   KEMPublicKey,
   PublicKey,
 } from "@signalapp/libsignal-client";
-import type { DeviceStore } from "./device-store.ts";
-import { type GeneratedPreKey, type PreKeyUploadPayload, type RawPreKeyBundle } from "../models/e2ee.ts";
+import type { DeviceStore } from "../store/device-store.ts";
+import { type GeneratedPreKey, type PreKeyUploadPayload, type RawPreKeyBundle } from "../../models/e2ee.ts";
 export type { GeneratedPreKey, PreKeyUploadPayload, RawPreKeyBundle };
 
 export const INITIAL_PREKEY_COUNT = 812;  // First registration batch

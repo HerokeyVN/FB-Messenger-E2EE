@@ -1,21 +1,20 @@
 import { EventEmitter } from "node:events";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import type { FCAApi } from "fca-unofficial";
 
 import type { MessengerEvent } from "../models/domain.ts";
 import {
   unmarshal,
-  marshal,
   encodeNode,
+  marshal as marshalBinary,
   buildUnifiedSessionId,
   encodeKeepAlive,
   encodePresenceAvailable,
   encodePrimingNode,
   encodeSetPassive,
-} from "../e2ee/wa-binary.ts";
-import type { DGWEndpointKind } from "../e2ee/dgw-socket.ts";
-import type { Node } from "../e2ee/wa-binary.ts";
-import type { RawPreKeyBundle } from "../models/e2ee.ts";
+} from "../e2ee/transport/binary/wa-binary.ts";
+import type { DGWEndpointKind } from "../e2ee/transport/dgw/dgw-socket.ts";
+import type { Node } from "../e2ee/transport/binary/wa-binary.ts";
 import type { SessionData } from "../models/client.ts";
 import type {
   CreateThreadInput,
@@ -52,27 +51,27 @@ import type {
 } from "../models/thread.ts";
 import { ThreadService } from "../services/thread.service.ts";
 
-import { DeviceStore } from "../e2ee/device-store.ts";
-import { E2EEClient } from "../e2ee/e2ee-client.ts";
-import { FacebookE2EESocket } from "../e2ee/noise-socket.ts";
-import { FacebookDGWSocket } from "../e2ee/dgw-socket.ts";
-import { encodeClientPayload } from "../e2ee/message-builder.ts";
-import { MIN_PREKEY_COUNT, WANTED_PREKEY_COUNT } from "../e2ee/prekey-manager.ts";
+import { DeviceStore } from "../e2ee/store/device-store.ts";
+import { E2EEClient } from "../e2ee/application/e2ee-client.ts";
+import { FacebookE2EESocket } from "../e2ee/transport/noise/noise-socket.ts";
+import { FacebookDGWSocket } from "../e2ee/transport/dgw/dgw-socket.ts";
+import { encodeClientPayload } from "../e2ee/message/message-builder.ts";
 import { str, now } from "../utils/fca-utils.ts";
 import { logger } from "../utils/logger.ts";
 import { EventMapper } from "./event-mapper.ts";
 import { DGWHandler } from "./dgw-handler.ts";
 import { E2EEHandler } from "./e2ee-handler.ts";
-
-interface RecentE2EEOutgoing {
-  kind: "dm" | "group";
-  chatJid: string;
-  messageId: string;
-  messageType: string;
-  messageApp: Buffer;
-  frankingTag: Buffer;
-  createdAtMs: number;
-}
+import { OutboundMessageCache } from "../e2ee/application/outbound-message-cache.ts";
+import { E2EERetryManager } from "../e2ee/application/retry-manager.ts";
+import { PreKeyMaintenance } from "../e2ee/application/prekey-maintenance.ts";
+import {
+  buildParticipantListHash,
+  normalizeDMThreadToJid,
+  sameMessengerDevice,
+  sameMessengerUser,
+  toBareMessengerJid,
+  uniqueJids,
+} from "../e2ee/application/fanout-planner.ts";
 
 export class ClientController {
   private api: FCAApi | null = null;
@@ -81,15 +80,14 @@ export class ClientController {
   private activeDeviceStore: DeviceStore | null = null;
   private e2eeConnected: boolean = false;
   private heartbeatInterval?: NodeJS.Timeout;
-  private preKeyMaintenanceInterval?: NodeJS.Timeout;
   private userId: string = "";
-  private readonly recentE2EEOutgoing = new Map<string, RecentE2EEOutgoing>();
-  private readonly recentE2EEOutgoingTtlMs = 15 * 60 * 1000;
-  private readonly recentE2EEOutgoingMax = 200;
+  private readonly outgoingE2EECache = new OutboundMessageCache();
 
   private readonly eventMapper: EventMapper;
   private readonly dgwHandler: DGWHandler;
   private readonly e2eeHandler: E2EEHandler;
+  private readonly retryManager: E2EERetryManager;
+  private readonly preKeyMaintenance: PreKeyMaintenance;
 
   public constructor(
     private readonly authService: AuthService,
@@ -107,8 +105,21 @@ export class ClientController {
       this.eventMapper,
       () => this.e2eeSocket,
       () => this.activeDeviceStore,
-      node => this.handleE2EERetryReceipt(node),
+      node => this.retryManager.handleReceipt(node),
     );
+    this.retryManager = new E2EERetryManager({
+      cache: this.outgoingE2EECache,
+      getClient: () => this.e2eeService.getClient(),
+      getSocket: () => this.e2eeSocket,
+      getSelfJid: () => this.getSelfE2EEJid(),
+      getPreKeyBundle: (jid) => this.e2eeHandler.getPreKeyBundle(jid),
+    });
+    this.preKeyMaintenance = new PreKeyMaintenance({
+      getSocket: () => this.e2eeSocket,
+      getStore: () => this.activeDeviceStore,
+      getServerPreKeyCount: () => this.e2eeHandler.getServerPreKeyCount(),
+      uploadPreKeys: (count) => this.e2eeHandler.uploadPreKeys(count),
+    });
   }
 
   // Lifecycle
@@ -284,8 +295,8 @@ export class ClientController {
     await noiseSocket.sendFrame(encodePrimingNode(buildUnifiedSessionId()));
     await noiseSocket.sendFrame(encodeSetPassive("active-stream", false));
 
-    await this.syncE2EEPreKeys("startup");
-    this.startPreKeyMaintenance();
+    await this.preKeyMaintenance.sync("startup");
+    this.preKeyMaintenance.start();
 
     this.startHeartbeat();
     await this.connectDGWIfEnabled(userId);
@@ -320,44 +331,6 @@ export class ClientController {
     }, 30000);
   }
 
-  private startPreKeyMaintenance() {
-    this.stopPreKeyMaintenance();
-    const intervalMs = Number(process.env.FB_E2EE_PREKEY_SYNC_INTERVAL_MS ?? "1800000");
-    if (!Number.isFinite(intervalMs) || intervalMs <= 0) return;
-
-    this.preKeyMaintenanceInterval = setInterval(() => {
-      void this.syncE2EEPreKeys("periodic").catch((err) => {
-        logger.error("ClientController", "Periodic prekey sync failed:", err);
-      });
-    }, intervalMs);
-  }
-
-  private stopPreKeyMaintenance() {
-    if (this.preKeyMaintenanceInterval) {
-      clearInterval(this.preKeyMaintenanceInterval);
-      this.preKeyMaintenanceInterval = undefined;
-    }
-  }
-
-  private async syncE2EEPreKeys(reason: string): Promise<void> {
-    if (!this.e2eeSocket || !this.activeDeviceStore) return;
-
-    const minCount = Number(process.env.FB_E2EE_PREKEY_MIN_COUNT ?? String(MIN_PREKEY_COUNT));
-    const uploadCount = Number(process.env.FB_E2EE_PREKEY_UPLOAD_COUNT ?? String(WANTED_PREKEY_COUNT));
-
-    try {
-      const serverCount = await this.e2eeHandler.getServerPreKeyCount();
-      logger.info("ClientController", `E2EE prekey sync (${reason}): server has ${serverCount} prekeys`);
-
-      if (serverCount < minCount) {
-        await this.e2eeHandler.uploadPreKeys(uploadCount);
-        logger.info("ClientController", `Uploaded ${uploadCount} E2EE prekeys without changing registered device`);
-      }
-    } catch (err) {
-      logger.error("ClientController", `Prekey sync failed (${reason}):`, err);
-    }
-  }
-
   private stopHeartbeat() {
     if (this.heartbeatInterval) {
       clearInterval(this.heartbeatInterval);
@@ -367,7 +340,7 @@ export class ClientController {
 
   private cleanup() {
     this.stopHeartbeat();
-    this.stopPreKeyMaintenance();
+    this.preKeyMaintenance.stop();
     this.e2eeConnected = false;
   }
 
@@ -451,9 +424,7 @@ export class ClientController {
     if (!this.e2eeSocket) throw new Error("E2EE not connected");
     const e2eeClient = this.e2eeService.getClient();
     const selfJid = this.getSelfE2EEJid();
-    const toJid = this.toBareMessengerJid(
-      threadId.includes("@") ? threadId : (threadId.includes(".") || threadId.includes(":") ? `${threadId}@msgr` : `${threadId}.0@msgr`)
-    );
+    const toJid = normalizeDMThreadToJid(threadId);
     const messageId = String(BigInt(Math.floor(Math.random() * 1e15)));
 
     const result = await e2eeClient.buildDMTextFanoutPayloads({
@@ -465,15 +436,14 @@ export class ClientController {
       replyToSenderJid: replyToMessageId ? toJid : undefined,
     });
 
-    const { encodeNode, marshal: m } = await import("../e2ee/wa-binary.ts");
     const participantNodes: Buffer[] = [];
-    const deviceJids = this.uniqueJids(await this.e2eeHandler.getDeviceList([toJid, this.toBareMessengerJid(selfJid)]));
+    const deviceJids = uniqueJids(await this.e2eeHandler.getDeviceList([toJid, toBareMessengerJid(selfJid)]));
     if (deviceJids.length === 0) {
       logger.warn("ClientController", `No E2EE devices discovered for ${toJid}; sending empty participant list`);
     }
 
     for (const deviceJid of deviceJids) {
-      if (this.sameMessengerDevice(deviceJid, selfJid)) continue;
+      if (sameMessengerDevice(deviceJid, selfJid)) continue;
 
       try {
         if (!(await e2eeClient.hasSession(deviceJid))) {
@@ -482,7 +452,7 @@ export class ClientController {
           await e2eeClient.establishSession(deviceJid, bundle);
         }
 
-        const payload = this.sameMessengerUser(deviceJid, selfJid)
+        const payload = sameMessengerUser(deviceJid, selfJid)
           ? result.selfDevicePayload
           : result.devicePayload;
         const encrypted = await e2eeClient.encryptDevicePayload(deviceJid, selfJid, payload);
@@ -505,8 +475,8 @@ export class ClientController {
       ]),
     ]);
 
-    await this.e2eeSocket.sendFrame(m(msgNode));
-    this.rememberE2EEOutgoing({
+    await this.e2eeSocket.sendFrame(marshalBinary(msgNode));
+    this.outgoingE2EECache.remember({
       kind: "dm",
       chatJid: toJid,
       messageId,
@@ -528,10 +498,10 @@ export class ClientController {
     const memberJids = await this.e2eeHandler.getGroupParticipants(groupJid);
 
     // Fetch device list for all members
-    const deviceUsers = this.uniqueJids([...memberJids, this.toBareMessengerJid(selfJid)]);
+    const deviceUsers = uniqueJids([...memberJids, toBareMessengerJid(selfJid)]);
     logger.debug("ClientController", `Fetching devices for ${deviceUsers.length} members`);
-    const deviceJids = this.uniqueJids(await this.e2eeHandler.getDeviceList(deviceUsers))
-      .filter((jid) => !this.sameMessengerDevice(jid, selfJid));
+    const deviceJids = uniqueJids(await this.e2eeHandler.getDeviceList(deviceUsers))
+      .filter((jid) => !sameMessengerDevice(jid, selfJid));
     const messageId = String(BigInt(Math.floor(Math.random() * 1e15)));
 
     // Encrypt the main group payload
@@ -546,8 +516,6 @@ export class ClientController {
 
     // Distribute SKDM to all devices
     const participantNodes: Buffer[] = [];
-    const { encodeNode, marshal: m } = await import("../e2ee/wa-binary.ts");
-
     for (const deviceJid of deviceJids) {
       try {
         // Establish session if missing
@@ -557,7 +525,7 @@ export class ClientController {
           await e2eeClient.establishSession(deviceJid, bundle);
         }
 
-        const payload = this.sameMessengerUser(deviceJid, selfJid)
+        const payload = sameMessengerUser(deviceJid, selfJid)
           ? result.selfDevicePayload
           : result.devicePayload;
         const skdmEnc = await e2eeClient.encryptDevicePayload(deviceJid, selfJid, payload);
@@ -570,7 +538,7 @@ export class ClientController {
       }
     }
 
-    const phash = this.buildParticipantListHash(deviceJids);
+    const phash = buildParticipantListHash(deviceJids);
     const participantsNode = encodeNode("participants", {}, participantNodes);
     const frankingNode = encodeNode("franking", {}, [
       encodeNode("franking_tag", {}, result.frankingTag),
@@ -587,8 +555,8 @@ export class ClientController {
       skmsgNode
     ]);
 
-    await this.e2eeSocket.sendFrame(m(msgNode));
-    this.rememberE2EEOutgoing({
+    await this.e2eeSocket.sendFrame(marshalBinary(msgNode));
+    this.outgoingE2EECache.remember({
       kind: "group",
       chatJid: groupJid,
       messageId,
@@ -600,228 +568,9 @@ export class ClientController {
     logger.info("ClientController", `E2EE Group message sent to ${groupJid} with ${participantNodes.length} devices`);
   }
 
-  private rememberE2EEOutgoing(record: RecentE2EEOutgoing): void {
-    this.pruneRecentE2EEOutgoing();
-    this.recentE2EEOutgoing.set(record.messageId, record);
-
-    while (this.recentE2EEOutgoing.size > this.recentE2EEOutgoingMax) {
-      const oldest = this.recentE2EEOutgoing.keys().next().value;
-      if (!oldest) break;
-      this.recentE2EEOutgoing.delete(oldest);
-    }
-  }
-
-  private pruneRecentE2EEOutgoing(): void {
-    const cutoff = now() - this.recentE2EEOutgoingTtlMs;
-    for (const [messageId, record] of this.recentE2EEOutgoing) {
-      if (record.createdAtMs < cutoff) this.recentE2EEOutgoing.delete(messageId);
-    }
-  }
-
-  private async handleE2EERetryReceipt(node: Node): Promise<void> {
-    const retryNode = this.findChild(node, "retry");
-    const messageId = str(retryNode?.attrs?.id || node.attrs.id);
-    if (!messageId) return;
-
-    this.pruneRecentE2EEOutgoing();
-    const cached = this.recentE2EEOutgoing.get(messageId);
-    if (!cached) {
-      logger.warn("ClientController", `Received retry receipt for unknown/out-of-cache E2EE message ${messageId}`);
-      return;
-    }
-
-    const requesterJid = this.resolveRetryRequesterJid(node, cached);
-    if (!requesterJid) {
-      logger.warn("ClientController", `Cannot resolve retry requester for E2EE message ${messageId}`);
-      return;
-    }
-
-    const retryCount = Number(retryNode?.attrs?.count ?? "1") || 1;
-    if (retryCount >= 10) {
-      logger.warn("ClientController", `Ignoring retry receipt #${retryCount} for ${messageId}`);
-      return;
-    }
-
-    const e2eeClient = this.e2eeService.getClient();
-    const selfJid = this.getSelfE2EEJid();
-
-    const retryBundle = this.preKeyBundleFromRetryReceipt(node, requesterJid);
-    if (retryBundle) {
-      await e2eeClient.establishSession(requesterJid, retryBundle);
-    } else if (!(await e2eeClient.hasSession(requesterJid))) {
-      const bundle = await this.e2eeHandler.getPreKeyBundle(requesterJid);
-      await e2eeClient.establishSession(requesterJid, bundle);
-    }
-
-    const t = String(retryNode?.attrs?.t || node.attrs.t || Math.floor(now() / 1000));
-    let encrypted: { type: "msg" | "pkmsg"; ciphertext: Buffer };
-    const attrs: Record<string, string> = {
-      to: cached.chatJid,
-      type: cached.messageType,
-      id: messageId,
-      t,
-    };
-
-    if (cached.kind === "group") {
-      attrs.participant = requesterJid;
-      const skdm = await e2eeClient.createSenderKeyDistributionPayload(cached.chatJid, selfJid);
-      encrypted = await e2eeClient.encryptMessageAppForDevice(requesterJid, selfJid, cached.messageApp, {
-        skdm,
-        backupDirective: { messageId, actionType: "UPSERT" },
-      });
-    } else {
-      attrs.device_fanout = "false";
-      if (node.attrs.participant) attrs.participant = node.attrs.participant;
-      encrypted = await e2eeClient.encryptMessageAppForDevice(requesterJid, selfJid, cached.messageApp, {
-        dsm: this.sameMessengerUser(requesterJid, selfJid) ? { destinationJid: cached.chatJid, phash: "" } : undefined,
-      });
-    }
-
-    const msgNode = encodeNode("message", attrs, [
-      encodeNode("enc", { v: "3", type: encrypted.type, count: String(retryCount) }, encrypted.ciphertext),
-      encodeNode("franking", {}, [
-        encodeNode("franking_tag", {}, cached.frankingTag),
-      ]),
-    ]);
-
-    await this.e2eeSocket?.sendFrame(marshal(msgNode));
-    logger.info("ClientController", `Resent E2EE message ${messageId} for retry #${retryCount} to ${requesterJid}`);
-  }
-
-  private resolveRetryRequesterJid(node: Node, cached: RecentE2EEOutgoing): string {
-    if (cached.kind === "group") {
-      return str(node.attrs.participant || node.attrs.recipient);
-    }
-    return str(node.attrs.participant || node.attrs.from || node.attrs.recipient || cached.chatJid);
-  }
-
-  private preKeyBundleFromRetryReceipt(node: Node, jid: string): RawPreKeyBundle | null {
-    const keysNode = this.findChild(node, "keys");
-    if (!keysNode) return null;
-
-    const registration = this.findChild(node, "registration")?.content;
-    const identity = this.findChild(keysNode, "identity")?.content;
-    const keyNode = this.findChild(keysNode, "key");
-    const skeyNode = this.findChild(keysNode, "skey");
-    const signedPreKeyId = this.findChild(skeyNode, "id")?.content;
-    const signedPreKeyValue = this.findChild(skeyNode, "value")?.content;
-    const signedPreKeySignature = this.findChild(skeyNode, "signature")?.content;
-    const preKeyId = this.findChild(keyNode, "id")?.content;
-    const preKeyValue = this.findChild(keyNode, "value")?.content;
-
-    if (!Buffer.isBuffer(registration) || !Buffer.isBuffer(identity) || !Buffer.isBuffer(signedPreKeyValue) || !Buffer.isBuffer(signedPreKeySignature)) {
-      return null;
-    }
-
-    const bundle: RawPreKeyBundle = {
-      registrationId: registration.length === 4 ? registration.readUInt32BE(0) : 0,
-      deviceId: this.parseMessengerJid(jid).device,
-      identityKey: this.keyWithSignalPrefix(identity),
-      signedPreKey: {
-        keyId: this.readSignalKeyId(signedPreKeyId),
-        publicKey: this.keyWithSignalPrefix(signedPreKeyValue),
-        signature: signedPreKeySignature,
-      },
-    };
-
-    if (Buffer.isBuffer(preKeyValue)) {
-      bundle.preKey = {
-        keyId: this.readSignalKeyId(preKeyId),
-        publicKey: this.keyWithSignalPrefix(preKeyValue),
-      };
-    }
-
-    return bundle;
-  }
-
-  private findChild(node: any, tag: string): any | null {
-    if (!node) return null;
-    if (node.tag === tag) return node;
-    const children = Array.isArray(node.content) ? node.content : [];
-    for (const child of children) {
-      const found = this.findChild(child, tag);
-      if (found) return found;
-    }
-    return null;
-  }
-
-  private keyWithSignalPrefix(value: Buffer): Buffer {
-    return value.length === 32 ? Buffer.concat([Buffer.from([5]), value]) : value;
-  }
-
-  private readSignalKeyId(value: unknown): number {
-    if (!Buffer.isBuffer(value) || value.length === 0) return 0;
-    return value.readUIntBE(0, Math.min(value.length, 3));
-  }
-
-  private buildParticipantListHash(participants: string[]): string {
-    const sorted = [...participants].map((jid) => this.toAdString(jid)).sort();
-    const hash = createHash("sha256").update(sorted.join("")).digest();
-    return `2:${hash.subarray(0, 6).toString("base64").replace(/=+$/, "")}`;
-  }
-
   private getSelfE2EEJid(): string {
     const device = this.activeDeviceStore?.jidDevice ?? 0;
     return `${this.userId}.${device}@msgr`;
-  }
-
-  private parseMessengerJid(jid: string): { user: string; device: number; server: string } {
-    const [userPart = jid, server = ""] = jid.split("@");
-    const colonIdx = userPart.indexOf(":");
-    const dotIdx = userPart.indexOf(".");
-    const userEnd = dotIdx !== -1 ? dotIdx : (colonIdx !== -1 ? colonIdx : userPart.length);
-    const user = userPart.slice(0, userEnd) || userPart;
-    const rawDevice = colonIdx !== -1
-      ? userPart.slice(colonIdx + 1)
-      : (dotIdx !== -1 ? userPart.slice(dotIdx + 1) : "0");
-    return { user, device: Number(rawDevice) || 0, server };
-  }
-
-  private toBareMessengerJid(jid: string): string {
-    const parsed = this.parseMessengerJid(jid);
-    return parsed.server === "msgr" ? `${parsed.user}.0@msgr` : jid;
-  }
-
-  private sameMessengerUser(a: string, b: string): boolean {
-    const pa = this.parseMessengerJid(a);
-    const pb = this.parseMessengerJid(b);
-    return pa.server === "msgr" && pb.server === "msgr" && pa.user === pb.user;
-  }
-
-  private sameMessengerDevice(a: string, b: string): boolean {
-    const pa = this.parseMessengerJid(a);
-    const pb = this.parseMessengerJid(b);
-    return pa.server === "msgr" && pb.server === "msgr" && pa.user === pb.user && pa.device === pb.device;
-  }
-
-  private uniqueJids(jids: string[]): string[] {
-    const seen = new Set<string>();
-    const out: string[] = [];
-    for (const jid of jids) {
-      if (!jid) continue;
-      const parsed = this.parseMessengerJid(jid);
-      const key = parsed.server === "msgr" ? `${parsed.user}:${parsed.device}@${parsed.server}` : jid;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      out.push(jid);
-    }
-    return out;
-  }
-
-  private toAdString(jid: string): string {
-    const [userPart = "", server = ""] = jid.split("@");
-    if (server === "msgr") {
-      const parsed = this.parseMessengerJid(jid);
-      if (!parsed.user) return jid;
-      return `${parsed.user}.0:${parsed.device}@${server}`;
-    }
-
-    const [userAndAgent = "", devicePart = ""] = userPart.split(":");
-    const [user = "", rawAgentPart = ""] = userAndAgent.split(".");
-    const rawAgent = rawAgentPart ? Number(rawAgentPart) : 0;
-    const device = devicePart ? Number(devicePart) : 0;
-    if (!user) return jid;
-    return `${user}.${rawAgent}:${device}@${server}`;
   }
 
   public async sendReaction(input: SendReactionInput): Promise<void> { await this.messagingService.react(this.requireApi(), input); }

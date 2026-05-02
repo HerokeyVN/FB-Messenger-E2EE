@@ -3,7 +3,6 @@ import { Readable } from "node:stream";
 import { Buffer } from "node:buffer";
 
 import type { FCAApi, LoginData } from "fca-unofficial";
-import { encodeICDCIdentityList, encodeSignedICDCIdentityList } from "../e2ee/message-builder.ts";
 import { createHmac, createHash } from "node:crypto";
 import { logger } from "../utils/logger.ts";
 

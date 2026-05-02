@@ -1,17 +1,16 @@
 /**
  * E2EE Media Crypto - Layer 4
  *
- * Implements the exact same AES-256-CBC + HMAC-SHA256 + HKDF scheme
- * used by whatsmeow (upload.go / download.go) for Messenger E2EE attachments.
+ * Implements the AES-256-CBC + HMAC-SHA256 + HKDF media scheme.
  *
  * No Signal Protocol needed here - this is pure symmetric crypto.
  */
 
 import { createCipheriv, createDecipheriv, createHmac, hkdfSync, randomBytes, createHash } from "node:crypto";
-import type { DecryptMediaOptions, EncryptMediaResult, MediaKeys } from "../models/media.ts";
+import type { DecryptMediaOptions, EncryptMediaResult, MediaKeys } from "../../models/media.ts";
 export type { DecryptMediaOptions, EncryptMediaResult, MediaKeys };
 
-// Media type -> HKDF info string (from whatsmeow/download.go)
+// Media type -> HKDF info string
 
 export const MediaType = {
   image: "WhatsApp Image Keys",
@@ -25,7 +24,7 @@ export const MediaType = {
 
 export type MediaTypeKey = keyof typeof MediaType;
 
-// MMS type strings used in upload/download URLs (from whatsmeow/download.go)
+// MMS type strings used in upload/download URLs
 export const MmsType: Record<MediaTypeKey, string> = {
   image: "image",
   video: "video",
@@ -41,7 +40,6 @@ export const MmsType: Record<MediaTypeKey, string> = {
 
 /**
  * HKDF-SHA256 expand of mediaKey into iv + cipherKey + macKey + refKey (112 bytes total).
- * Mirrors whatsmeow getMediaKeys() in download.go:319.
  */
 export function expandMediaKey(mediaKey: Buffer, type: MediaTypeKey): MediaKeys {
   const info = MediaType[type];
@@ -61,7 +59,6 @@ export function expandMediaKey(mediaKey: Buffer, type: MediaTypeKey): MediaKeys 
 
 /**
  * Encrypt media for upload.
- * Mirrors whatsmeow Upload() in upload.go:69.
  */
 export function encryptMedia(plaintext: Buffer, type: MediaTypeKey): EncryptMediaResult {
   const mediaKey = randomBytes(32);
@@ -95,7 +92,6 @@ const MEDIA_MAC_LENGTH = 10;
 
 /**
  * Decrypt downloaded E2EE media.
- * Mirrors whatsmeow downloadAndDecrypt() in download.go:289.
  */
 export function decryptMedia(opts: DecryptMediaOptions): Buffer {
   const { data, mediaKey, type, fileSHA256: expectedFileSHA256, fileEncSHA256: expectedFileEncSHA256 } = opts;

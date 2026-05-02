@@ -4,8 +4,6 @@
  * Implements Noise_XX_25519_AESGCM_SHA256 - the transport layer handshake
  * used by WhatsApp/Messenger before any Signal Protocol messages.
  *
- * Reference: whatsmeow/handshake.go, whatsmeow/socket/
- *
  * Flow:
  *   1. Client -> Server: ClientHello { ephemeral: EphemeralPub }
  *   2. Server -> Client: ServerHello { ephemeral, static(enc), payload(enc=cert) }
@@ -25,8 +23,8 @@ import {
   diffieHellman,
 } from "node:crypto";
 import { inflateSync } from "node:zlib";
-import type { HandshakeResult, NoiseSocket, RawWebSocket } from "../models/e2ee.ts";
-import { logger } from "../utils/logger.ts";
+import type { HandshakeResult, NoiseSocket, RawWebSocket } from "../../../models/e2ee.ts";
+import { logger } from "../../../utils/logger.ts";
 export type { HandshakeResult, NoiseSocket, RawWebSocket };
 
 // X25519 Helpers using node:crypto
@@ -55,10 +53,9 @@ export function x25519DH(privKeyRaw: Buffer, pubKeyRaw: Buffer): Buffer {
   return diffieHellman({ privateKey: priv, publicKey: pub });
 }
 
-// Hardcoded constants (from handshake.go)
+// Hardcoded protocol constants
 
 // Root certificate public key - Ed25519, 32 bytes
-// Source: whatsmeow/handshake.go:27 - WACertPubKey
 export const WA_CERT_PUB_KEY = Buffer.from(
   "142375574d0a587166aae71ebe516437c4a28b73e3695c6ce1f7f9545da8ee6b",
   "hex",
@@ -68,7 +65,6 @@ export const WA_CERT_PUB_KEY = Buffer.from(
 const NOISE_START_PATTERN = Buffer.from("Noise_XX_25519_AESGCM_SHA256\0\0\0\0");
 
 // WA header sent at the start of every connection (version + magic bytes)
-// Source: whatsmeow/socket/frame_socket.go
 export const WA_HEADER = Buffer.from([87, 65, 6, 3]); // "WA\x06\x03"
 
 // Noise state machine helpers

@@ -1,16 +1,14 @@
 /**
  * E2EE Media Upload - HTTP upload to rupload.facebook.com
- * Reference: whatsmeow/upload.go rawUpload()
  */
 
 import { createHash } from "node:crypto";
 
-import type { MediaUploadConfig, MediaUploadResult, MmsTypeStr } from "../models/media.ts";
+import type { MediaUploadConfig, MediaUploadResult, MmsTypeStr } from "../../models/media.ts";
 export type { MediaUploadConfig, MediaUploadResult, MmsTypeStr };
 
 /**
  * Upload encrypted media bytes to Facebook's upload CDN.
- * Mirrors whatsmeow/upload.go rawUpload() with MessengerConfig path.
  */
 export async function uploadMedia(
   config: MediaUploadConfig,

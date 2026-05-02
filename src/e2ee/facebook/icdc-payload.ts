@@ -1,4 +1,4 @@
-import { ProtoWriter } from "./message-builder.ts";
+import { ProtoWriter } from "../message/message-builder.ts";
 
 export interface ICDCIdentityListOptions {
   seq: number;

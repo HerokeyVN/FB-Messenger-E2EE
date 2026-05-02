@@ -23,7 +23,7 @@ import {
 } from "@signalapp/libsignal-client";
 import { randomUUID } from "node:crypto";
 
-import type { DeviceStore } from "./device-store.ts";
+import type { DeviceStore } from "../store/device-store.ts";
 import type { RawPreKeyBundle } from "./prekey-manager.ts";
 import { buildPreKeyBundle } from "./prekey-manager.ts";
 import {
@@ -31,8 +31,8 @@ import {
   parseFBProtobufSKMSG,
   stableDistributionId,
   uuidStringify,
-} from "./facebook-protocol-utils.ts";
-import { logger } from "../utils/logger.ts";
+} from "../facebook/facebook-protocol-utils.ts";
+import { logger } from "../../utils/logger.ts";
 
 /**
  * Cast for strict libsignal params.
@@ -227,7 +227,7 @@ export async function encryptGroup(
   const cipherMsg = await groupEncrypt(senderAddr, activeDistributionId, store as any, u8(plaintext));
   const buf = u8(cipherMsg.serialize());
   // If this is a Facebook-style SKMSG (0x33 prefix, signature-less), re-wrap into
-  // a Signed Signal SKMSG so it matches whatsmeow's SignedSerialize() output.
+  // a signed Signal SKMSG compatible with libsignal group decrypt expectations.
   if (buf && buf.length > 0 && buf[0] === 0x33) {
     try {
       // Try protobuf-style FB SKMSG first

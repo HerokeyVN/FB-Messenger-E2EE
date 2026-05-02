@@ -9,7 +9,6 @@
  *   IdentityKeyStore, SessionStore, PreKeyStore, SignedPreKeyStore, SenderKeyStore
  */
 
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { randomUUID } from "node:crypto";
 import {
@@ -30,12 +29,22 @@ import {
   SignedPreKeyRecord,
   SignedPreKeyStore,
 } from "@signalapp/libsignal-client";
-import { logger } from "../utils/logger.ts";
+import { logger } from "../../utils/logger.ts";
+import {
+  DEVICE_STORE_SCHEMA_VERSION,
+  base64RecordFromMap,
+  decodeBase64,
+  encodeBase64,
+  mapFromBase64Record,
+  migrateDeviceJSON,
+  parseDeviceJSON,
+} from "./device-json.ts";
+import { readDeviceJSONFile, writeDeviceJSONFile } from "./device-repository.ts";
 
 /** Cast for strict libsignal params */
 const u8 = (b: Buffer | Uint8Array): Buffer => Buffer.isBuffer(b) ? b : Buffer.from(b.buffer, b.byteOffset, b.byteLength);
 
-import type { DeviceJSON, NoiseKeyPair, ProtocolAddressStr, SenderKeyId } from "../models/e2ee.ts";
+import type { DeviceJSON, NoiseKeyPair, ProtocolAddressStr, SenderKeyId } from "../../models/e2ee.ts";
 export type { DeviceJSON, NoiseKeyPair, ProtocolAddressStr, SenderKeyId };
 
 // DeviceStore
@@ -125,9 +134,9 @@ export class DeviceStore
 
   static async fromFile(path: string): Promise<DeviceStore> {
     const ds = new DeviceStore(path);
-    if (existsSync(path)) {
-      const raw = readFileSync(path, "utf8");
-      await ds.loadJSON(JSON.parse(raw) as DeviceJSON);
+    const json = readDeviceJSONFile(path);
+    if (json) {
+      await ds.loadJSON(json);
     } else {
       await ds.initNew();
       ds.saveToFile();
@@ -142,7 +151,7 @@ export class DeviceStore
   ): Promise<DeviceStore> {
     const ds = new DeviceStore("");
     ds.onDataChanged = onDataChanged;
-    await ds.loadJSON(JSON.parse(json) as DeviceJSON);
+    await ds.loadJSON(parseDeviceJSON(json));
     return ds;
   }
 
@@ -183,67 +192,50 @@ export class DeviceStore
     this.nextPreKeyId = 1;
   }
 
-  private async loadJSON(d: DeviceJSON): Promise<void> {
-    const b64 = (s: string) => Buffer.from(s, "base64");
+  private async loadJSON(input: DeviceJSON): Promise<void> {
+    const d = migrateDeviceJSON(input);
 
-    this.noiseKeyPriv = b64(d.noise_key_priv);
-    this.identityKeyPriv = b64(d.identity_key_priv);
-    this.signedPreKeyPriv = b64(d.signed_pre_key_priv);
+    this.noiseKeyPriv = decodeBase64(d.noise_key_priv);
+    this.identityKeyPriv = decodeBase64(d.identity_key_priv);
+    this.signedPreKeyPriv = decodeBase64(d.signed_pre_key_priv);
     this.signedPreKeyId = d.signed_pre_key_id;
-    this.signedPreKeySig = b64(d.signed_pre_key_sig);
+    this.signedPreKeySig = decodeBase64(d.signed_pre_key_sig);
     this.registrationId = d.registration_id;
-    this.advSecretKey = b64(d.adv_secret_key);
+    this.advSecretKey = decodeBase64(d.adv_secret_key);
     this.facebookUUID = d.facebook_uuid;
     this.jidUser = d.jid_user;
     this.jidDevice = d.jid_device;
-    this.nextPreKeyId = d.next_pre_key_id ?? 1;
+    this.nextPreKeyId = d.next_pre_key_id;
 
-    for (const [k, v] of Object.entries(d.identities ?? {})) {
-      this.identities.set(k as ProtocolAddressStr, Buffer.from(v, "base64"));
-    }
-    for (const [k, v] of Object.entries(d.sessions ?? {})) {
-      this.sessions.set(k as ProtocolAddressStr, Buffer.from(v, "base64"));
-    }
-    for (const [k, v] of Object.entries(d.pre_keys ?? {})) {
-      this.preKeys.set(Number(k), Buffer.from(v, "base64"));
-    }
-    for (const [k, v] of Object.entries(d.sender_keys ?? {})) {
-      this.senderKeys.set(k as SenderKeyId, Buffer.from(v, "base64"));
-    }
-    for (const [k, v] of Object.entries((d as any).signed_pre_keys ?? {})) {
-      this.signedPreKeys.set(Number(k), Buffer.from(v as string, "base64"));
-    }
+    this.identities = mapFromBase64Record(d.identities, (key) => key as ProtocolAddressStr);
+    this.sessions = mapFromBase64Record(d.sessions, (key) => key as ProtocolAddressStr);
+    this.preKeys = mapFromBase64Record(d.pre_keys, Number);
+    this.senderKeys = mapFromBase64Record(d.sender_keys, (key) => key as SenderKeyId);
+    this.signedPreKeys = mapFromBase64Record(d.signed_pre_keys, Number);
   }
 
   // Serialization
 
   toJSON(): DeviceJSON {
-    const b64 = (b: Buffer) => b.toString("base64");
     const d: DeviceJSON = {
-      noise_key_priv: b64(this.noiseKeyPriv),
-      identity_key_priv: b64(this.identityKeyPriv),
-      signed_pre_key_priv: b64(this.signedPreKeyPriv),
+      schema_version: DEVICE_STORE_SCHEMA_VERSION,
+      noise_key_priv: encodeBase64(this.noiseKeyPriv),
+      identity_key_priv: encodeBase64(this.identityKeyPriv),
+      signed_pre_key_priv: encodeBase64(this.signedPreKeyPriv),
       signed_pre_key_id: this.signedPreKeyId,
-      signed_pre_key_sig: b64(this.signedPreKeySig),
+      signed_pre_key_sig: encodeBase64(this.signedPreKeySig),
       registration_id: this.registrationId,
-      adv_secret_key: b64(this.advSecretKey),
+      adv_secret_key: encodeBase64(this.advSecretKey),
       facebook_uuid: this.facebookUUID,
       next_pre_key_id: this.nextPreKeyId,
-      identities: {},
-      sessions: {},
-      pre_keys: {},
-      sender_keys: {},
+      identities: base64RecordFromMap(this.identities),
+      sessions: base64RecordFromMap(this.sessions),
+      pre_keys: base64RecordFromMap(this.preKeys),
+      sender_keys: base64RecordFromMap(this.senderKeys),
+      signed_pre_keys: base64RecordFromMap(this.signedPreKeys),
     };
     if (this.jidUser) d.jid_user = this.jidUser;
     if (this.jidDevice) d.jid_device = this.jidDevice;
-
-    for (const [k, v] of this.identities) d.identities![k] = Buffer.from(v).toString("base64");
-    for (const [k, v] of this.sessions) d.sessions![k] = Buffer.from(v).toString("base64");
-    for (const [k, v] of this.preKeys) d.pre_keys![String(k)] = Buffer.from(v).toString("base64");
-    (d as any).signed_pre_keys = {};
-    for (const [k, v] of this.signedPreKeys) (d as any).signed_pre_keys[String(k)] = Buffer.from(v).toString("base64");
-    for (const [k, v] of this.senderKeys) d.sender_keys![k] = Buffer.from(v).toString("base64");
-
     return d;
   }
 
@@ -253,7 +245,7 @@ export class DeviceStore
 
   saveToFile(): void {
     if (this.path) {
-      writeFileSync(this.path, this.getData(), { mode: 0o600 });
+      writeDeviceJSONFile(this.path, this.getData());
     } else if (this.onDataChanged) {
       this.onDataChanged(this.getData());
     }

@@ -1,4 +1,4 @@
-import { ProtoWriter } from "../../../src/e2ee/message-builder.ts";
+import { ProtoWriter } from "../../../src/e2ee/message/message-builder.ts";
 
 describe("message-builder", () => {
   describe("ProtoWriter", () => {

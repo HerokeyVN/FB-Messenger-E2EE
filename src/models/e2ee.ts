@@ -3,7 +3,7 @@ import type {
   SignedPreKeyRecord,
   KyberPreKeyRecord,
 } from "@signalapp/libsignal-client";
-import type { MediaTypeKey } from "../e2ee/media-crypto.ts";
+import type { MediaTypeKey } from "../e2ee/media/media-crypto.ts";
 import type { MmsTypeStr } from "./media.ts";
 
 // Storage & Keys
@@ -12,6 +12,8 @@ export type ProtocolAddressStr = `${string}:${number}`;
 export type SenderKeyId = `${ProtocolAddressStr}:${string}`;
 
 export interface DeviceJSON {
+  /** schema version for local migrations; absent in old stores */
+  schema_version?: number;
   /** base64, 32 bytes - Noise handshake key */
   noise_key_priv: string;
   /** base64, 32 bytes - Signal identity key */
@@ -185,7 +187,7 @@ export interface MediaFields {
 }
 
 export interface MessageTransportOptions {
-  /** Application payload. Omit for SKDM-only device fanout, matching whatsmeow nil Payload. */
+  /** Application payload. Omit for SKDM-only device fanout. */
   messageApp?: Buffer;
   /** Included only when sending a copy to own other devices */
   dsm?: {
@@ -197,7 +199,7 @@ export interface MessageTransportOptions {
     groupId: string;
     skdmBytes: Buffer;
   };
-  /** Included for group sends to match whatsmeow's backup directive */
+  /** Included for group sends with backup directive metadata. */
   backupDirective?: {
     messageId: string;
     actionType?: "UPSERT" | "REMOVE";

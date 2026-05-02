@@ -12,9 +12,9 @@
  * This replaces the stub E2EEService for actual E2EE message handling.
  */
 
-import type { DeviceStore } from "./device-store.ts";
-import type { MediaTypeKey } from "./media-crypto.ts";
-import { encryptMedia, decryptMedia } from "./media-crypto.ts";
+import type { DeviceStore } from "../store/device-store.ts";
+import type { MediaTypeKey } from "../media/media-crypto.ts";
+import { encryptMedia, decryptMedia } from "../media/media-crypto.ts";
 import {
   encryptDM,
   decryptDM,
@@ -26,13 +26,13 @@ import {
   establishSession,
   jidToAddress,
   hasSession,
-} from "./signal-manager.ts";
+} from "../signal/signal-manager.ts";
 import type {
   E2EEDecryptMediaOptions,
   E2EEEncryptMediaResult,
   E2EESendTextOptions,
   EncryptionResult,
-} from "../models/e2ee.ts";
+} from "../../models/e2ee.ts";
 export type {
   E2EEDecryptMediaOptions,
   E2EEEncryptMediaOptions,
@@ -41,7 +41,7 @@ export type {
   E2EESendTextResult,
   EncryptionResult,
   MediaFields,
-} from "../models/e2ee.ts";
+} from "../../models/e2ee.ts";
 import {
   encodeMessageApplication,
   encodeMessageTransport,
@@ -55,11 +55,11 @@ import {
   encodeReactionMessage,
   encodeEditMessage,
   encodeRevokeMessage,
-} from "./message-builder.ts";
-import type { RawPreKeyBundle } from "../models/e2ee.ts";
-import type { MediaUploadConfig, MmsTypeStr } from "../models/media.ts";
-import { uploadMedia } from "./media-upload.ts";
-import { MmsType } from "./media-crypto.ts";
+} from "../message/message-builder.ts";
+import type { RawPreKeyBundle } from "../../models/e2ee.ts";
+import type { MediaUploadConfig, MmsTypeStr } from "../../models/media.ts";
+import { uploadMedia } from "../media/media-upload.ts";
+import { MmsType } from "../media/media-crypto.ts";
 
 // Types
 

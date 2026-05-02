@@ -1,14 +1,14 @@
 /**
  * E2EEService - extension point for end-to-end encrypted media operations.
  *
- * The JS/TS side of this bridge does NOT have a direct equivalent of the Go
- * whatsmeow library for E2EE upload/download.  fca-unofficial speaks to the
+ * The JS/TS side of this bridge keeps E2EE media upload/download separate
+ * from the non-E2EE Messenger gateway. fca-unofficial speaks to the
  * standard Messenger LightSpeed API (non-E2EE) only.
  *
  * This service therefore acts as a typed facade that:
  *  1. Documents the contract (what operations are expected, their inputs/outputs).
  *  2. Provides an extension point where a future native-addon or WASM layer
- *     can be plugged in (analogous to how bridge-go media_e2ee.go wraps whatsmeow).
+ *     can be plugged in.
  *  3. Exposes a guard so callers know E2EE is not yet connected.
  *
  * Concrete implementations can extend or replace this class.
@@ -24,9 +24,9 @@ import type {
   E2EESendVideoOptions,
   E2EEUploadResult,
 } from "../models/e2ee.ts";
-import type { E2EEClient } from "../e2ee/e2ee-client.ts";
+import type { E2EEClient } from "../e2ee/application/e2ee-client.ts";
 import type { MediaUploadConfig } from "../models/media.ts";
-import { MediaType, type MediaTypeKey } from "../e2ee/media-crypto.ts";
+import { MediaType, type MediaTypeKey } from "../e2ee/media/media-crypto.ts";
 
 export class E2EEService {
   private _connected = false;
@@ -66,10 +66,7 @@ export class E2EEService {
 
   // Typed implementations wrapping E2EEClient
 
-  /**
-   * Send an E2EE image. Requires a concrete provider implementation.
-   * Mirrors bridge-go Client.SendE2EEImage.
-   */
+  /** Send an E2EE image. Requires a concrete provider implementation. */
   public async sendImage(opts: E2EESendImageOptions): Promise<E2EEUploadResult> {
     this.ensureEnabled();
     await this.e2eeClient!.encryptAndUploadMedia(
@@ -85,9 +82,7 @@ export class E2EEService {
     };
   }
 
-  /**
-   * Send an E2EE video. Mirrors bridge-go Client.SendE2EEVideo.
-   */
+  /** Send an E2EE video. */
   public async sendVideo(opts: E2EESendVideoOptions): Promise<E2EEUploadResult> {
     this.ensureEnabled();
     await this.e2eeClient!.encryptAndUploadMedia(
@@ -99,9 +94,7 @@ export class E2EEService {
     return { messageId: "mock-id", timestampMs: Date.now() };
   }
 
-  /**
-   * Send an E2EE audio/voice message. Mirrors bridge-go Client.SendE2EEAudio.
-   */
+  /** Send an E2EE audio/voice message. */
   public async sendAudio(opts: E2EESendAudioOptions): Promise<E2EEUploadResult> {
     this.ensureEnabled();
     await this.e2eeClient!.encryptAndUploadMedia(
@@ -113,9 +106,7 @@ export class E2EEService {
     return { messageId: "mock-id", timestampMs: Date.now() };
   }
 
-  /**
-   * Send an E2EE document/file. Mirrors bridge-go Client.SendE2EEDocument.
-   */
+  /** Send an E2EE document/file. */
   public async sendDocument(opts: E2EESendDocumentOptions): Promise<E2EEUploadResult> {
     this.ensureEnabled();
     await this.e2eeClient!.encryptAndUploadMedia(
@@ -127,9 +118,7 @@ export class E2EEService {
     return { messageId: "mock-id", timestampMs: Date.now() };
   }
 
-  /**
-   * Send an E2EE sticker. Mirrors bridge-go Client.SendE2EESticker.
-   */
+  /** Send an E2EE sticker. */
   public async sendSticker(opts: E2EESendStickerOptions): Promise<E2EEUploadResult> {
     this.ensureEnabled();
     await this.e2eeClient!.encryptAndUploadMedia(
@@ -141,10 +130,7 @@ export class E2EEService {
     return { messageId: "mock-id", timestampMs: Date.now() };
   }
 
-  /**
-   * Download E2EE media by decrypting it with the provided keys.
-   * Mirrors bridge-go Client.DownloadE2EEMedia.
-   */
+  /** Download E2EE media by decrypting it with the provided keys. */
   public async downloadMedia(opts: E2EEDownloadOptions): Promise<E2EEDownloadResult> {
     this.ensureEnabled();
     // Fetch encrypted payload from CDN

@@ -4,26 +4,26 @@
  */
 
 // Client orchestrator
-export { E2EEClient } from "./e2ee-client.ts";
+export { E2EEClient } from "./application/e2ee-client.ts";
 export type {
   E2EESendTextOptions,
   E2EESendTextResult,
   E2EEEncryptMediaOptions,
   E2EEEncryptMediaResult,
   E2EEDecryptMediaOptions,
-} from "./e2ee-client.ts";
+} from "./application/e2ee-client.ts";
 
 // Device store
-export { DeviceStore } from "./device-store.ts";
-export type { DeviceJSON, NoiseKeyPair } from "./device-store.ts";
+export { DeviceStore } from "./store/device-store.ts";
+export type { DeviceJSON, NoiseKeyPair } from "./store/device-store.ts";
 
 // Media crypto (can be used standalone)
-export { encryptMedia, decryptMedia, expandMediaKey, sha256, MediaType, MmsType } from "./media-crypto.ts";
-export type { MediaTypeKey, MediaKeys, EncryptMediaResult, DecryptMediaOptions } from "./media-crypto.ts";
+export { encryptMedia, decryptMedia, expandMediaKey, sha256, MediaType, MmsType } from "./media/media-crypto.ts";
+export type { MediaTypeKey, MediaKeys, EncryptMediaResult, DecryptMediaOptions } from "./media/media-crypto.ts";
 
 // Media upload
-export { uploadMedia } from "./media-upload.ts";
-export type { MediaUploadConfig, MediaUploadResult, MmsTypeStr } from "./media-upload.ts";
+export { uploadMedia } from "./media/media-upload.ts";
+export type { MediaUploadConfig, MediaUploadResult, MmsTypeStr } from "./media/media-upload.ts";
 
 // Signal manager (lower level)
 export {
@@ -38,7 +38,7 @@ export {
   createSenderKeyDistributionMessage,
   processSKDM,
   hasSession,
-} from "./signal-manager.ts";
+} from "./signal/signal-manager.ts";
 
 // PreKey manager
 export {
@@ -49,8 +49,8 @@ export {
   INITIAL_PREKEY_COUNT,
   WANTED_PREKEY_COUNT,
   MIN_PREKEY_COUNT,
-} from "./prekey-manager.ts";
-export type { GeneratedPreKey, PreKeyUploadPayload, RawPreKeyBundle } from "./prekey-manager.ts";
+} from "./signal/prekey-manager.ts";
+export type { GeneratedPreKey, PreKeyUploadPayload, RawPreKeyBundle } from "./signal/prekey-manager.ts";
 
 // Message builder
 export {
@@ -68,9 +68,9 @@ export {
   FB_MESSAGE_VERSION,
   FB_MESSAGE_APPLICATION_VERSION,
   FB_CONSUMER_MESSAGE_VERSION,
-} from "./message-builder.ts";
-export type { MediaFields, MessageTransportOptions } from "./message-builder.ts";
+} from "./message/message-builder.ts";
+export type { MediaFields, MessageTransportOptions } from "./message/message-builder.ts";
 
 // Noise handshake
-export { doHandshake, WA_CERT_PUB_KEY, WA_HEADER } from "./noise-handshake.ts";
-export type { NoiseSocket, RawWebSocket, HandshakeResult } from "./noise-handshake.ts";
+export { doHandshake, WA_CERT_PUB_KEY, WA_HEADER } from "./transport/noise/noise-handshake.ts";
+export type { NoiseSocket, RawWebSocket, HandshakeResult } from "./transport/noise/noise-handshake.ts";

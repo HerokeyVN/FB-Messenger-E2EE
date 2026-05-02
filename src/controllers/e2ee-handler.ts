@@ -5,22 +5,22 @@ import {
   encodeNode,
   encodePreKeyUpload,
   type Node
-} from "../e2ee/wa-binary.ts";
+} from "../e2ee/transport/binary/wa-binary.ts";
 import {
   decodeMessageTransport,
   decodeMessageApplication,
   decodeConsumerApplication,
   decodeArmadillo,
   ProtoWriter
-} from "../e2ee/message-builder.ts";
+} from "../e2ee/message/message-builder.ts";
 import {
   generatePreKeys,
   generateSignedPreKey
-} from "../e2ee/prekey-manager.ts";
+} from "../e2ee/signal/prekey-manager.ts";
 import { str, num, now } from "../utils/fca-utils.ts";
-import type { DeviceStore } from "../e2ee/device-store.ts";
-import type { FacebookE2EESocket } from "../e2ee/noise-socket.ts";
-import type { E2EEClient } from "../e2ee/e2ee-client.ts";
+import type { DeviceStore } from "../e2ee/store/device-store.ts";
+import type { FacebookE2EESocket } from "../e2ee/transport/noise/noise-socket.ts";
+import type { E2EEClient } from "../e2ee/application/e2ee-client.ts";
 import type { EventMapper } from "./event-mapper.ts";
 import type { RawPreKeyBundle } from "../models/e2ee.ts";
 import { logger } from "../utils/logger.ts";

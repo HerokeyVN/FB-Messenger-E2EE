@@ -1,9 +1,9 @@
 import { EventEmitter } from "node:events";
 import { appendFileSync } from "node:fs";
 import { doHandshake } from "./noise-handshake.ts";
-import type { NoiseSocket, RawWebSocket } from "../models/e2ee.ts";
-import { encodeKeepAlive, unmarshal } from "./wa-binary.ts";
-import { logger } from "../utils/logger.ts";
+import type { NoiseSocket, RawWebSocket } from "../../../models/e2ee.ts";
+import { encodeKeepAlive, unmarshal } from "../binary/wa-binary.ts";
+import { logger } from "../../../utils/logger.ts";
 
 export class FacebookE2EESocket extends EventEmitter {
   private ws: WebSocket | null = null;

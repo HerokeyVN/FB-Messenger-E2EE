@@ -1,4 +1,4 @@
-import { BinaryDecoder, unmarshal, type Node, BinaryToken } from "../../../src/e2ee/wa-binary.ts";
+import { BinaryDecoder, unmarshal, type Node, BinaryToken } from "../../../src/e2ee/transport/binary/wa-binary.ts";
 
 describe("wa-binary", () => {
   describe("unmarshal", () => {

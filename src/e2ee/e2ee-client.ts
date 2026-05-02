@@ -65,6 +65,7 @@ import { MmsType } from "./media-crypto.ts";
 
 export interface DMTextFanoutPayloads {
   type: "dm";
+  messageApp: Buffer;
   devicePayload: Buffer;
   selfDevicePayload: Buffer;
   frankingTag: Buffer;
@@ -108,6 +109,7 @@ export class E2EEClient {
 
     return {
       type: "dm",
+      messageApp,
       devicePayload: encodeMessageTransport({ messageApp }),
       selfDevicePayload: encodeMessageTransport({
         messageApp,
@@ -131,6 +133,7 @@ export class E2EEClient {
       type: "dm",
       encrypted: { type: encrypted.type, ciphertext: Buffer.from(encrypted.ciphertext) },
       frankingTag: fanout.frankingTag,
+      messageApp: fanout.messageApp,
     };
   }
 
@@ -170,6 +173,7 @@ export class E2EEClient {
 
     return {
       type: "group",
+      messageApp,
       groupCiphertext: Buffer.from(groupCiphertext),
       devicePayload: Buffer.from(deviceTransport),
       selfDevicePayload: Buffer.from(selfDeviceTransport),
@@ -181,6 +185,32 @@ export class E2EEClient {
       },
       frankingTag,
     };
+  }
+
+  /** Create a sender-key distribution payload for targeted group retry responses. */
+  async createSenderKeyDistributionPayload(groupJid: string, selfJid: string): Promise<{ groupId: string; skdmBytes: Buffer; distributionId: string }> {
+    const { skdm, distributionId } = await createSenderKeyDistributionMessage(this.store, groupJid, selfJid);
+    return { groupId: groupJid, skdmBytes: Buffer.from(skdm.serialize()), distributionId };
+  }
+
+  /** Encrypt a MessageApplication payload directly to one device (used for retry responses). */
+  async encryptMessageAppForDevice(
+    recipientJid: string,
+    selfJid: string,
+    messageApp: Buffer,
+    opts: {
+      skdm?: { groupId: string; skdmBytes: Buffer };
+      dsm?: { destinationJid: string; phash: string };
+      backupDirective?: { messageId: string; actionType: "UPSERT" | "REMOVE" };
+    } = {},
+  ): Promise<{ type: "msg" | "pkmsg"; ciphertext: Buffer }> {
+    const transport = encodeMessageTransport({
+      messageApp,
+      skdm: opts.skdm,
+      dsm: opts.dsm,
+      backupDirective: opts.backupDirective,
+    });
+    return this.encryptDevicePayload(recipientJid, selfJid, transport);
   }
 
   /** Check if a session exists for a given device JID. */

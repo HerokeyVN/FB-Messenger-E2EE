@@ -95,7 +95,7 @@ This refresh does not change the registered device identity. It only generates/u
 
 ### Group sender-key caveat
 
-A group `skmsg` needs a matching local `sender_keys` record. If the local sender key for a group/sender is truly missing, the client cannot derive it locally. It must receive a fresh SKDM from the sender/group. The receive path processes SKDM from participant nodes and stores sender-key records automatically.
+A group `skmsg` needs a matching local `sender_keys` record. If the local sender key for a group/sender is truly missing, the client cannot derive it locally. On retryable decrypt failures, the receive path sends a `receipt type="retry"` with registration/key material to ask the sender/server to resend enough data to rebuild the session/SKDM. When a fresh SKDM arrives, it is processed and stored automatically. For messages sent by this client, a short in-memory retry cache stores the encrypted app payload/franking tag so incoming retry receipts can be answered with a targeted retry message and fresh SKDM without re-registering the device.
 
 ---
 
@@ -251,7 +251,7 @@ Common event types:
 
 1. `FacebookE2EESocket` decrypts Noise frames.
 2. `ClientController` unmarshals WA-binary nodes.
-3. `E2EEHandler` ACKs, processes participant SKDM, decrypts `msg` / `pkmsg` / `skmsg`, decodes protobuf payloads, and emits normalized events.
+3. `E2EEHandler` ACKs, processes participant SKDM/direct participant payloads, decrypts `msg` / `pkmsg` / `skmsg`, decodes protobuf payloads, and emits normalized events.
 4. Decrypt failures emit an `error` event rather than terminating the listener loop.
 
 ### Send path

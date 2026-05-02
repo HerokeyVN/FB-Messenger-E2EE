@@ -155,9 +155,10 @@ export interface E2EEDecryptMediaOptions {
 }
 
 export type EncryptionResult =
-  | { type: "dm"; encrypted: { type: "msg" | "pkmsg"; ciphertext: Buffer }; frankingTag: Buffer }
+  | { type: "dm"; encrypted: { type: "msg" | "pkmsg"; ciphertext: Buffer }; frankingTag: Buffer; messageApp: Buffer }
   | {
     type: "group";
+    messageApp: Buffer;
     groupCiphertext: Buffer;
     devicePayload: Buffer;
     selfDevicePayload: Buffer;

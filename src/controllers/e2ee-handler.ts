@@ -1,20 +1,21 @@
-import { 
-  unmarshal, 
-  marshal, 
-  encodeIQ, 
-  encodeNode, 
+import {
+  unmarshal,
+  marshal,
+  encodeIQ,
+  encodeNode,
   encodePreKeyUpload,
-  type Node 
+  type Node
 } from "../e2ee/wa-binary.ts";
-import { 
-  decodeMessageTransport, 
-  decodeMessageApplication, 
-  decodeConsumerApplication, 
-  decodeArmadillo 
+import {
+  decodeMessageTransport,
+  decodeMessageApplication,
+  decodeConsumerApplication,
+  decodeArmadillo,
+  ProtoWriter
 } from "../e2ee/message-builder.ts";
-import { 
-  generatePreKeys, 
-  generateSignedPreKey 
+import {
+  generatePreKeys,
+  generateSignedPreKey
 } from "../e2ee/prekey-manager.ts";
 import { str, num, now } from "../utils/fca-utils.ts";
 import type { DeviceStore } from "../e2ee/device-store.ts";
@@ -24,22 +25,25 @@ import type { EventMapper } from "./event-mapper.ts";
 import type { RawPreKeyBundle } from "../models/e2ee.ts";
 import { logger } from "../utils/logger.ts";
 
+type RetryReceiptHandler = (node: Node) => void | Promise<void>;
+
 export class E2EEHandler {
   private readonly pendingIQs = new Map<string, { resolve: (val: any) => void; reject: (err: any) => void }>();
+  private readonly retryReceipts = new Map<string, number>();
+  private readonly maxRetryReceiptsPerMessage = 2;
 
   constructor(
     private readonly eventMapper: EventMapper,
     private readonly getSocket: () => FacebookE2EESocket | null,
-    private readonly getStore: () => DeviceStore | null
+    private readonly getStore: () => DeviceStore | null,
+    private readonly onRetryReceipt?: RetryReceiptHandler,
   ) {}
 
   public async handleEncryptedMessage(node: Node, selfUserId: string, e2eeClient: E2EEClient) {
-    this.sendAck(node);
-
     const fromJid = node.attrs.from;
     const participantJid = node.attrs.participant || node.attrs.from;
     const senderJid = participantJid;
-    const chatJid = node.attrs.from;
+    let chatJid = node.attrs.from;
     const selfDevice = this.getStore()?.jidDevice ?? 0;
     const selfJid = `${selfUserId}.${selfDevice}@msgr`;
 
@@ -47,6 +51,7 @@ export class E2EEHandler {
     // Messenger may encode our device JID as user.device@msgr or user:device@msgr,
     // and stale stores may not know jidDevice yet. Try all entries for our user.
     const participantsNode = Array.isArray(node.content) ? node.content.find((c: any) => c.tag === "participants") : null;
+    let emittedParticipantApp = false;
     if (participantsNode && Array.isArray(participantsNode.content)) {
       const selfToNodes = participantsNode.content.filter((n: any) =>
         n.tag === "to" && this.sameMessengerUser(n.attrs.jid, selfJid)
@@ -70,23 +75,26 @@ export class E2EEHandler {
 
           if (!dmDecrypted) continue;
           const transport = decodeMessageTransport(dmDecrypted);
-          const skdm = transport?.protocol?.ancillary?.skdm;
-          if (!skdm) continue;
+          const participantChatJid = this.chatJidFromTransport(transport, chatJid);
+          if (this.emitTransportApplication(transport, senderJid, participantChatJid, node.attrs.id)) {
+            emittedParticipantApp = true;
+          }
 
-          const gid = skdm.groupID || skdm.groupId || chatJid;
-          const skBytes = skdm.axolotlSenderKeyDistributionMessage || skdm.skdmBytes;
+          const skdm = transport?.protocol?.ancillary?.skdm;
+          const gid = skdm?.groupID || skdm?.groupId || chatJid;
+          const skBytes = skdm?.axolotlSenderKeyDistributionMessage || skdm?.skdmBytes;
           if (skBytes) {
             logger.info("E2EEHandler", `Processing SKDM from participants node for group ${gid} from ${senderJid}`);
             await e2eeClient.processSenderKeyDistribution(senderJid, skBytes, gid);
             processedSKDM = true;
-            break;
+            if (!emittedParticipantApp) break;
           }
         } catch (err) {
           logger.debug("E2EEHandler", `Participant SKDM decrypt failed for ${targetJid}: ${err}`);
         }
       }
 
-      if (selfToNodes.length > 0 && !processedSKDM) {
+      if (selfToNodes.length > 0 && !processedSKDM && !emittedParticipantApp) {
         logger.warn("E2EEHandler", `Found ${selfToNodes.length} participant node(s) for self but no SKDM could be processed from ${senderJid}`);
       }
     }
@@ -96,12 +104,43 @@ export class E2EEHandler {
       ? node.content.find((c: any) => c.tag === "enc")
       : (node.content?.tag === "enc" ? node.content : null);
 
-    if (!enc) return;
+    if (!enc) {
+      const unavailable = Array.isArray(node.content)
+        ? node.content.find((c: any) => c.tag === "unavailable")
+        : (node.content?.tag === "unavailable" ? node.content : null);
+      if (emittedParticipantApp) {
+        this.sendAck(node);
+        return;
+      }
+
+      if (unavailable) {
+        const err = new Error(`unavailable encrypted message${unavailable.attrs?.type ? `: ${unavailable.attrs.type}` : ""}`);
+        await this.maybeSendRetryReceipt(node, senderJid, chatJid, err);
+        this.eventMapper.emitMappedEvent({
+          type: "e2ee_message",
+          data: {
+            type: "decryption_failed",
+            error: err.message,
+            chatJid,
+            threadId: chatJid,
+            senderJid,
+            senderId: this.parseMessengerJid(senderJid).user,
+            messageId: node.attrs.id,
+            timestampMs: now()
+          }
+        });
+      }
+      this.sendAck(node);
+      return;
+    }
 
     const type = enc.attrs.type;
     const ciphertext = enc.content;
 
-    if (!Buffer.isBuffer(ciphertext)) return;
+    if (!Buffer.isBuffer(ciphertext)) {
+      this.sendAck(node);
+      return;
+    }
 
     try {
       let decrypted: Buffer;
@@ -112,36 +151,14 @@ export class E2EEHandler {
       } else if (type === "skmsg") {
         decrypted = await e2eeClient.decryptGroupMessage(senderJid, ciphertext, fromJid);
       } else {
+        this.sendAck(node);
         return;
       }
 
       const transport = decodeMessageTransport(decrypted);
-      const appPayload = transport?.payload?.applicationPayload?.payload;
-
       logger.debug("E2EEHandler", "Decrypted transport:", JSON.stringify(transport, null, 2));
-
-      if (appPayload) {
-        const messageApp = decodeMessageApplication(appPayload);
-        logger.debug("E2EEHandler", "Decrypted messageApp:", JSON.stringify(messageApp, null, 2));
-        const subProtocol = messageApp.payload?.subProtocol;
-        let appMessage: any = null;
-        let isArmadillo = false;
-
-        if (subProtocol?.consumerMessage?.payload) {
-          appMessage = decodeConsumerApplication(subProtocol.consumerMessage.payload);
-        } else if (subProtocol?.armadillo?.payload) {
-          appMessage = decodeArmadillo(subProtocol.armadillo.payload);
-          isArmadillo = true;
-        }
-
-        if (appMessage) {
-          const normalized = this.normalizeE2EEMessage(appMessage, senderJid, chatJid, node.attrs.id, messageApp);
-          if (normalized) {
-            normalized.isArmadillo = isArmadillo;
-            this.eventMapper.emitMappedEvent({ type: "e2ee_message", data: normalized });
-          }
-        }
-      }
+      chatJid = this.chatJidFromTransport(transport, chatJid);
+      this.emitTransportApplication(transport, senderJid, chatJid, node.attrs.id);
 
       if (transport?.protocol?.ancillary?.skdm) {
         const skdm = transport.protocol.ancillary.skdm;
@@ -151,8 +168,11 @@ export class E2EEHandler {
           await e2eeClient.processSenderKeyDistribution(participantJid, skBytes, gid);
         }
       }
+      this.sendAck(node);
     } catch (err) {
       logger.error("E2EEHandler", "Decryption failed:", err);
+      await this.maybeSendRetryReceipt(node, senderJid, chatJid, err);
+      this.sendAck(node);
       this.eventMapper.emitMappedEvent({
         type: "e2ee_message",
         data: {
@@ -192,6 +212,188 @@ export class E2EEHandler {
     const pa = this.parseMessengerJid(a);
     const pb = this.parseMessengerJid(b);
     return pa.server === "msgr" && pb.server === "msgr" && pa.user === pb.user;
+  }
+
+  private async maybeSendRetryReceipt(node: Node, senderJid: string, chatJid: string, err: unknown): Promise<void> {
+    const messageId = node.attrs.id;
+    if (!messageId) return;
+
+    const message = err instanceof Error ? err.message : String(err ?? "");
+    const retryable = /missing sender key state|No session|decrypt|invalid|unavailable/i.test(message);
+    if (!retryable) return;
+
+    const key = `${chatJid}:${senderJid}:${messageId}`;
+    const count = (this.retryReceipts.get(key) ?? 0) + 1;
+    if (count > this.maxRetryReceiptsPerMessage) {
+      logger.warn("E2EEHandler", `Skip retry receipt for ${messageId}; retry limit reached`);
+      return;
+    }
+    this.retryReceipts.set(key, count);
+
+    try {
+      await this.sendRetryReceipt(node, senderJid, count);
+      logger.info("E2EEHandler", `Sent retry receipt #${count} for ${messageId} to recover missing E2EE keys`);
+    } catch (retryErr) {
+      logger.warn("E2EEHandler", `Failed to send retry receipt for ${messageId}: ${retryErr}`);
+    }
+  }
+
+  private async sendRetryReceipt(node: Node, senderJid: string, retryCount: number): Promise<void> {
+    const socket = this.getSocket();
+    const store = this.getStore();
+    if (!socket || !store?.registrationId) return;
+
+    const receiptAttrs: Record<string, string> = {
+      id: node.attrs.id,
+      to: node.attrs.from,
+      type: "retry",
+    };
+
+    if (node.attrs.participant || node.attrs.from?.endsWith("@g.us")) {
+      receiptAttrs.participant = node.attrs.participant || senderJid;
+    }
+
+    const retryAttrs: Record<string, string> = {
+      count: String(retryCount),
+      id: node.attrs.id,
+      t: String(node.attrs.t || Math.floor(now() / 1000)),
+      v: "1",
+    };
+
+    const regBuf = Buffer.alloc(4);
+    regBuf.writeUInt32BE(store.registrationId);
+
+    const children: Buffer[] = [
+      encodeNode("retry", retryAttrs),
+      encodeNode("registration", {}, regBuf),
+    ];
+
+    // Include a fresh one-time prekey and current signed prekey so the sender
+    // can rebuild a session before resending SKDM/message. This preserves the
+    // same registered device identity; it does not perform ICDC registration.
+    const keysNode = await this.buildRetryKeysNode(store).catch((err) => {
+      logger.debug("E2EEHandler", `Could not build retry keys node: ${err}`);
+      return null;
+    });
+    if (keysNode) children.push(keysNode);
+
+    const receipt = encodeNode("receipt", receiptAttrs, children);
+    await socket.sendFrame(marshal(receipt));
+  }
+
+  private async buildRetryKeysNode(store: DeviceStore): Promise<Buffer> {
+    const [preKey] = await generatePreKeys(store, 1);
+    if (!preKey) throw new Error("failed to generate retry prekey");
+
+    let signedPreKey = await store.getSignedPreKey(store.signedPreKeyId).catch(() => null as any);
+    if (!signedPreKey) signedPreKey = await generateSignedPreKey(store);
+
+    return encodeNode("keys", {}, [
+      encodeNode("type", {}, Buffer.from([0x05])),
+      encodeNode("identity", {}, store.getIdentityPublicKey()),
+      this.encodeSignalKeyNode("key", preKey.id, Buffer.from(preKey.record.publicKey().getPublicKeyBytes())),
+      this.encodeSignalKeyNode(
+        "skey",
+        signedPreKey.id(),
+        Buffer.from(signedPreKey.publicKey().getPublicKeyBytes()),
+        Buffer.from(signedPreKey.signature()),
+      ),
+      encodeNode("device-identity", {}, this.encodeDummyDeviceIdentity()),
+    ]);
+  }
+
+  private encodeDummyDeviceIdentity(): Buffer {
+    return new ProtoWriter()
+      .bytes(1, Buffer.alloc(0))
+      .bytes(2, Buffer.alloc(32))
+      .bytes(3, Buffer.alloc(64))
+      .bytes(4, Buffer.alloc(64))
+      .build();
+  }
+
+  private encodeSignalKeyNode(tag: "key" | "skey", id: number, publicKey: Buffer, signature?: Buffer): Buffer {
+    const idBuf = Buffer.alloc(4);
+    idBuf.writeUInt32BE(id);
+    const children = [
+      encodeNode("id", {}, idBuf.subarray(1)),
+      encodeNode("value", {}, publicKey),
+    ];
+    if (signature) children.push(encodeNode("signature", {}, signature));
+    return encodeNode(tag, {}, children);
+  }
+
+  public async handleReceipt(node: Node): Promise<void> {
+    const d = {
+      type: node.attrs.type || "delivery",
+      chat: node.attrs.from || "",
+      sender: node.attrs.participant || node.attrs.from || "",
+      messageIds: node.attrs.id ? [node.attrs.id] : [],
+    };
+    this.eventMapper.emitMappedEvent({ type: "e2ee_receipt", data: d });
+
+    if (node.attrs.type === "retry") {
+      await this.onRetryReceipt?.(node);
+    }
+  }
+
+  public async handleNotification(node: Node): Promise<void> {
+    const notifType = node.attrs.type;
+    if (notifType === "encrypt") {
+      await this.handleEncryptNotification(node);
+    } else {
+      logger.debug("E2EEHandler", `Unhandled notification type ${notifType || "<none>"}`);
+    }
+  }
+
+  private async handleEncryptNotification(node: Node): Promise<void> {
+    const children = Array.isArray(node.content) ? node.content : (node.content ? [node.content] : []);
+    const countNode = children.find((child: any) => child.tag === "count");
+    const value = Number(countNode?.attrs?.value);
+    if (Number.isFinite(value)) {
+      logger.info("E2EEHandler", `Server encrypt notification reports ${value} prekeys remaining`);
+      if (value < 5) await this.uploadPreKeys(50);
+      return;
+    }
+
+    const identityNode = children.find((child: any) => child.tag === "identity");
+    if (identityNode) {
+      logger.warn("E2EEHandler", `Received identity-change notification from ${node.attrs.from}; sessions may need refresh`);
+      return;
+    }
+
+    logger.debug("E2EEHandler", `Unhandled encrypt notification from ${node.attrs.from || "server"}`);
+  }
+
+  private chatJidFromTransport(transport: any, fallback: string): string {
+    const integral = transport?.protocol?.integral;
+    const dsm = integral?.DSM || integral?.dsm;
+    return dsm?.destinationJID || dsm?.destinationJid || fallback;
+  }
+
+  private emitTransportApplication(transport: any, senderJid: string, chatJid: string, messageId: string): boolean {
+    const appPayload = transport?.payload?.applicationPayload?.payload;
+    if (!appPayload) return false;
+
+    const messageApp = decodeMessageApplication(appPayload);
+    logger.debug("E2EEHandler", "Decrypted messageApp:", JSON.stringify(messageApp, null, 2));
+    const subProtocol = messageApp.payload?.subProtocol;
+    let appMessage: any = null;
+    let isArmadillo = false;
+
+    if (subProtocol?.consumerMessage?.payload) {
+      appMessage = decodeConsumerApplication(subProtocol.consumerMessage.payload);
+    } else if (subProtocol?.armadillo?.payload) {
+      appMessage = decodeArmadillo(subProtocol.armadillo.payload);
+      isArmadillo = true;
+    }
+
+    if (!appMessage) return false;
+
+    const normalized = this.normalizeE2EEMessage(appMessage, senderJid, chatJid, messageId, messageApp);
+    if (!normalized) return false;
+    normalized.isArmadillo = isArmadillo;
+    this.eventMapper.emitMappedEvent({ type: "e2ee_message", data: normalized });
+    return true;
   }
 
   public handleIQ(node: Node) {
@@ -274,7 +476,7 @@ export class E2EEHandler {
         logger.error("E2EEHandler", `Failed to send getGroupParticipants IQ:`, err);
         reject(err);
       });
-      
+
       setTimeout(() => {
         if (this.pendingIQs.has(id)) {
           logger.error("E2EEHandler", `getGroupParticipants IQ timeout for ${id}`);
@@ -302,7 +504,7 @@ export class E2EEHandler {
 
   public async getDeviceList(userJids: string[]): Promise<string[]> {
     if (userJids.length === 0) return [];
-    
+
     const id = `${now()}`;
     const iq = encodeIQ({
       id,
@@ -320,7 +522,7 @@ export class E2EEHandler {
         logger.error("E2EEHandler", `Failed to send getDeviceList IQ:`, err);
         reject(err);
       });
-      
+
       setTimeout(() => {
         if (this.pendingIQs.has(id)) {
           logger.error("E2EEHandler", `getDeviceList IQ timeout for ${id}`);
@@ -331,17 +533,17 @@ export class E2EEHandler {
     });
 
     logger.debug("E2EEHandler", `Received getDeviceList response for ${id}`);
-    
+
     const usersNode = Array.isArray(res.content) ? res.content.find(n => n.tag === "users") : null;
     if (!usersNode || !Array.isArray(usersNode.content)) return [];
 
     const deviceJids: string[] = [];
     for (const userNode of usersNode.content) {
       if (userNode.tag !== "user" || !Array.isArray(userNode.content)) continue;
-      
+
       const devicesNode = userNode.content.find((n: any) => n.tag === "devices");
       if (!devicesNode || !Array.isArray(devicesNode.content)) continue;
-      
+
       const baseJid = userNode.attrs.jid; // e.g. 12345.0@msgr, 12345:0@msgr or 12345@msgr
       const parsed = this.parseMessengerJid(baseJid);
       const userId = parsed.user;

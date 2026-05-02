@@ -5,6 +5,8 @@ import type { FCAApi } from "fca-unofficial";
 import type { MessengerEvent } from "../models/domain.ts";
 import {
   unmarshal,
+  marshal,
+  encodeNode,
   buildUnifiedSessionId,
   encodeKeepAlive,
   encodePresenceAvailable,
@@ -13,6 +15,7 @@ import {
 } from "../e2ee/wa-binary.ts";
 import type { DGWEndpointKind } from "../e2ee/dgw-socket.ts";
 import type { Node } from "../e2ee/wa-binary.ts";
+import type { RawPreKeyBundle } from "../models/e2ee.ts";
 import type { SessionData } from "../models/client.ts";
 import type {
   CreateThreadInput,
@@ -61,6 +64,16 @@ import { EventMapper } from "./event-mapper.ts";
 import { DGWHandler } from "./dgw-handler.ts";
 import { E2EEHandler } from "./e2ee-handler.ts";
 
+interface RecentE2EEOutgoing {
+  kind: "dm" | "group";
+  chatJid: string;
+  messageId: string;
+  messageType: string;
+  messageApp: Buffer;
+  frankingTag: Buffer;
+  createdAtMs: number;
+}
+
 export class ClientController {
   private api: FCAApi | null = null;
   private dgwSocket: FacebookDGWSocket | null = null;
@@ -70,6 +83,9 @@ export class ClientController {
   private heartbeatInterval?: NodeJS.Timeout;
   private preKeyMaintenanceInterval?: NodeJS.Timeout;
   private userId: string = "";
+  private readonly recentE2EEOutgoing = new Map<string, RecentE2EEOutgoing>();
+  private readonly recentE2EEOutgoingTtlMs = 15 * 60 * 1000;
+  private readonly recentE2EEOutgoingMax = 200;
 
   private readonly eventMapper: EventMapper;
   private readonly dgwHandler: DGWHandler;
@@ -90,7 +106,8 @@ export class ClientController {
     this.e2eeHandler = new E2EEHandler(
       this.eventMapper,
       () => this.e2eeSocket,
-      () => this.activeDeviceStore
+      () => this.activeDeviceStore,
+      node => this.handleE2EERetryReceipt(node),
     );
   }
 
@@ -204,7 +221,7 @@ export class ClientController {
       if (rawFrame.length === 0) return;
       try {
         const node = unmarshal(rawFrame);
-        if ((node.tag === "message" || node.tag === "iq" || node.tag === "presence") && node.attrs.id) {
+        if (["receipt", "notification", "iq", "presence", "call", "chatstate"].includes(node.tag) && node.attrs.id) {
           this.e2eeHandler.sendAck(node);
         }
 
@@ -220,6 +237,12 @@ export class ClientController {
             break;
           case "presence":
             this.dispatchPresence(node);
+            break;
+          case "receipt":
+            await this.e2eeHandler.handleReceipt(node);
+            break;
+          case "notification":
+            await this.e2eeHandler.handleNotification(node);
             break;
           case "message":
           case "appdata":
@@ -483,6 +506,15 @@ export class ClientController {
     ]);
 
     await this.e2eeSocket.sendFrame(m(msgNode));
+    this.rememberE2EEOutgoing({
+      kind: "dm",
+      chatJid: toJid,
+      messageId,
+      messageType: "text",
+      messageApp: result.messageApp,
+      frankingTag: result.frankingTag,
+      createdAtMs: now(),
+    });
     logger.info("ClientController", `E2EE DM message sent to ${toJid} with ${participantNodes.length} devices`);
   }
 
@@ -494,7 +526,7 @@ export class ClientController {
     // Fetch group participants
     logger.debug("ClientController", `Fetching participants for group: ${groupJid}`);
     const memberJids = await this.e2eeHandler.getGroupParticipants(groupJid);
-    
+
     // Fetch device list for all members
     const deviceUsers = this.uniqueJids([...memberJids, this.toBareMessengerJid(selfJid)]);
     logger.debug("ClientController", `Fetching devices for ${deviceUsers.length} members`);
@@ -547,7 +579,7 @@ export class ClientController {
       encodeNode("request_id", {}, Buffer.from(randomUUID().replace(/-/g, ""), "hex")),
     ]);
     const skmsgNode = encodeNode("enc", { v: "3", type: "skmsg" }, result.groupCiphertext);
-    
+
     const msgNode = encodeNode("message", { to: groupJid, type: "text", id: messageId, phash }, [
       participantsNode,
       frankingNode,
@@ -556,7 +588,170 @@ export class ClientController {
     ]);
 
     await this.e2eeSocket.sendFrame(m(msgNode));
+    this.rememberE2EEOutgoing({
+      kind: "group",
+      chatJid: groupJid,
+      messageId,
+      messageType: "text",
+      messageApp: result.messageApp,
+      frankingTag: result.frankingTag,
+      createdAtMs: now(),
+    });
     logger.info("ClientController", `E2EE Group message sent to ${groupJid} with ${participantNodes.length} devices`);
+  }
+
+  private rememberE2EEOutgoing(record: RecentE2EEOutgoing): void {
+    this.pruneRecentE2EEOutgoing();
+    this.recentE2EEOutgoing.set(record.messageId, record);
+
+    while (this.recentE2EEOutgoing.size > this.recentE2EEOutgoingMax) {
+      const oldest = this.recentE2EEOutgoing.keys().next().value;
+      if (!oldest) break;
+      this.recentE2EEOutgoing.delete(oldest);
+    }
+  }
+
+  private pruneRecentE2EEOutgoing(): void {
+    const cutoff = now() - this.recentE2EEOutgoingTtlMs;
+    for (const [messageId, record] of this.recentE2EEOutgoing) {
+      if (record.createdAtMs < cutoff) this.recentE2EEOutgoing.delete(messageId);
+    }
+  }
+
+  private async handleE2EERetryReceipt(node: Node): Promise<void> {
+    const retryNode = this.findChild(node, "retry");
+    const messageId = str(retryNode?.attrs?.id || node.attrs.id);
+    if (!messageId) return;
+
+    this.pruneRecentE2EEOutgoing();
+    const cached = this.recentE2EEOutgoing.get(messageId);
+    if (!cached) {
+      logger.warn("ClientController", `Received retry receipt for unknown/out-of-cache E2EE message ${messageId}`);
+      return;
+    }
+
+    const requesterJid = this.resolveRetryRequesterJid(node, cached);
+    if (!requesterJid) {
+      logger.warn("ClientController", `Cannot resolve retry requester for E2EE message ${messageId}`);
+      return;
+    }
+
+    const retryCount = Number(retryNode?.attrs?.count ?? "1") || 1;
+    if (retryCount >= 10) {
+      logger.warn("ClientController", `Ignoring retry receipt #${retryCount} for ${messageId}`);
+      return;
+    }
+
+    const e2eeClient = this.e2eeService.getClient();
+    const selfJid = this.getSelfE2EEJid();
+
+    const retryBundle = this.preKeyBundleFromRetryReceipt(node, requesterJid);
+    if (retryBundle) {
+      await e2eeClient.establishSession(requesterJid, retryBundle);
+    } else if (!(await e2eeClient.hasSession(requesterJid))) {
+      const bundle = await this.e2eeHandler.getPreKeyBundle(requesterJid);
+      await e2eeClient.establishSession(requesterJid, bundle);
+    }
+
+    const t = String(retryNode?.attrs?.t || node.attrs.t || Math.floor(now() / 1000));
+    let encrypted: { type: "msg" | "pkmsg"; ciphertext: Buffer };
+    const attrs: Record<string, string> = {
+      to: cached.chatJid,
+      type: cached.messageType,
+      id: messageId,
+      t,
+    };
+
+    if (cached.kind === "group") {
+      attrs.participant = requesterJid;
+      const skdm = await e2eeClient.createSenderKeyDistributionPayload(cached.chatJid, selfJid);
+      encrypted = await e2eeClient.encryptMessageAppForDevice(requesterJid, selfJid, cached.messageApp, {
+        skdm,
+        backupDirective: { messageId, actionType: "UPSERT" },
+      });
+    } else {
+      attrs.device_fanout = "false";
+      if (node.attrs.participant) attrs.participant = node.attrs.participant;
+      encrypted = await e2eeClient.encryptMessageAppForDevice(requesterJid, selfJid, cached.messageApp, {
+        dsm: this.sameMessengerUser(requesterJid, selfJid) ? { destinationJid: cached.chatJid, phash: "" } : undefined,
+      });
+    }
+
+    const msgNode = encodeNode("message", attrs, [
+      encodeNode("enc", { v: "3", type: encrypted.type, count: String(retryCount) }, encrypted.ciphertext),
+      encodeNode("franking", {}, [
+        encodeNode("franking_tag", {}, cached.frankingTag),
+      ]),
+    ]);
+
+    await this.e2eeSocket?.sendFrame(marshal(msgNode));
+    logger.info("ClientController", `Resent E2EE message ${messageId} for retry #${retryCount} to ${requesterJid}`);
+  }
+
+  private resolveRetryRequesterJid(node: Node, cached: RecentE2EEOutgoing): string {
+    if (cached.kind === "group") {
+      return str(node.attrs.participant || node.attrs.recipient);
+    }
+    return str(node.attrs.participant || node.attrs.from || node.attrs.recipient || cached.chatJid);
+  }
+
+  private preKeyBundleFromRetryReceipt(node: Node, jid: string): RawPreKeyBundle | null {
+    const keysNode = this.findChild(node, "keys");
+    if (!keysNode) return null;
+
+    const registration = this.findChild(node, "registration")?.content;
+    const identity = this.findChild(keysNode, "identity")?.content;
+    const keyNode = this.findChild(keysNode, "key");
+    const skeyNode = this.findChild(keysNode, "skey");
+    const signedPreKeyId = this.findChild(skeyNode, "id")?.content;
+    const signedPreKeyValue = this.findChild(skeyNode, "value")?.content;
+    const signedPreKeySignature = this.findChild(skeyNode, "signature")?.content;
+    const preKeyId = this.findChild(keyNode, "id")?.content;
+    const preKeyValue = this.findChild(keyNode, "value")?.content;
+
+    if (!Buffer.isBuffer(registration) || !Buffer.isBuffer(identity) || !Buffer.isBuffer(signedPreKeyValue) || !Buffer.isBuffer(signedPreKeySignature)) {
+      return null;
+    }
+
+    const bundle: RawPreKeyBundle = {
+      registrationId: registration.length === 4 ? registration.readUInt32BE(0) : 0,
+      deviceId: this.parseMessengerJid(jid).device,
+      identityKey: this.keyWithSignalPrefix(identity),
+      signedPreKey: {
+        keyId: this.readSignalKeyId(signedPreKeyId),
+        publicKey: this.keyWithSignalPrefix(signedPreKeyValue),
+        signature: signedPreKeySignature,
+      },
+    };
+
+    if (Buffer.isBuffer(preKeyValue)) {
+      bundle.preKey = {
+        keyId: this.readSignalKeyId(preKeyId),
+        publicKey: this.keyWithSignalPrefix(preKeyValue),
+      };
+    }
+
+    return bundle;
+  }
+
+  private findChild(node: any, tag: string): any | null {
+    if (!node) return null;
+    if (node.tag === tag) return node;
+    const children = Array.isArray(node.content) ? node.content : [];
+    for (const child of children) {
+      const found = this.findChild(child, tag);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  private keyWithSignalPrefix(value: Buffer): Buffer {
+    return value.length === 32 ? Buffer.concat([Buffer.from([5]), value]) : value;
+  }
+
+  private readSignalKeyId(value: unknown): number {
+    if (!Buffer.isBuffer(value) || value.length === 0) return 0;
+    return value.readUIntBE(0, Math.min(value.length, 3));
   }
 
   private buildParticipantListHash(participants: string[]): string {

@@ -91,7 +91,7 @@ Configurable environment variables:
 | `FB_E2EE_PREKEY_MIN_COUNT` | `5` | Upload more prekeys when server count falls below this. |
 | `FB_E2EE_PREKEY_UPLOAD_COUNT` | `50` | Number of fresh one-time prekeys to upload per refill. |
 
-Group decrypt note: if local `sender_keys` for a group/sender are truly missing, old group messages may still fail with `missing sender key state` until the sender/group distributes a fresh SKDM to this device. That is different from prekey exhaustion.
+Group decrypt note: if local `sender_keys` for a group/sender are truly missing, the client cannot derive that key locally. On retryable decrypt failures it sends an E2EE retry receipt to request a resend/SKDM from the sender/server. The send path also keeps a short in-memory retry cache so incoming `receipt type="retry"` requests for recently-sent messages can be re-encrypted directly to the requesting device. This is different from prekey exhaustion.
 
 ---
 

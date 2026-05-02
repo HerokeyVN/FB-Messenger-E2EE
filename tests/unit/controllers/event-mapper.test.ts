@@ -117,4 +117,22 @@ describe("EventMapper", () => {
 
     mapper.emitMappedEvent(raw);
   });
+  it("should route E2EE decrypt failures through catch-all without unhandled error", (done) => {
+    eventBus.on("event", (event) => {
+      expect(event.type).toBe("error");
+      expect(event.data.message).toContain("E2EE decrypt failed");
+      done();
+    });
+
+    expect(() => mapper.emitMappedEvent({
+      type: "e2ee_message",
+      data: {
+        type: "decryption_failed",
+        chatJid: "1805602490133470@g.us",
+        senderJid: "100042415119261.101@msgr",
+        error: "missing sender key state",
+      },
+    })).not.toThrow();
+  });
+
 });

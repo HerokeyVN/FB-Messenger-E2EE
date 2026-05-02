@@ -150,6 +150,17 @@ export class EventMapper {
       const chatJid = str(e2eeData.chatJid || e2eeData.threadId);
       const senderJid = str(e2eeData.senderJid);
       const senderId = str(e2eeData.senderId) || senderJid.split(".")[0] || senderJid.split("@")[0] || senderJid;
+
+      if (e2eeData.type === "decryption_failed") {
+        this.emit({
+          type: "error",
+          data: {
+            message: `E2EE decrypt failed${chatJid ? ` in ${chatJid}` : ""}${senderJid ? ` from ${senderJid}` : ""}: ${str(e2eeData.error)}`,
+          },
+        });
+        return;
+      }
+
       this.emit({
         type: "e2ee_message",
         data: {
@@ -203,7 +214,13 @@ export class EventMapper {
   }
 
   public emit(event: MessengerEvent): void {
-    this.eventBus.emit(event.type as any, event.data);
+    // Node's EventEmitter treats "error" specially: emitting it without a
+    // typed error listener throws ERR_UNHANDLED_ERROR and can kill long-running
+    // listeners such as tests/script/echo-e2ee.ts.  We still always emit the
+    // catch-all "event" below, so client.onEvent(listener) receives the error.
+    if (event.type !== "error" || this.eventBus.listenerCount("error") > 0) {
+      this.eventBus.emit(event.type as any, event.data);
+    }
     this.eventBus.emit("event", event);
   }
 

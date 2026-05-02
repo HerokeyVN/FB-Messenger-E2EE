@@ -40,42 +40,54 @@ export class E2EEHandler {
     const participantJid = node.attrs.participant || node.attrs.from;
     const senderJid = participantJid;
     const chatJid = node.attrs.from;
-    const selfJid = `${selfUserId}.0@msgr`;
+    const selfDevice = this.getStore()?.jidDevice ?? 0;
+    const selfJid = `${selfUserId}.${selfDevice}@msgr`;
 
-    //Check for participant-specific SKDM in 'participants' node
+    // Check participant-specific SKDM in <participants>.
+    // Messenger may encode our device JID as user.device@msgr or user:device@msgr,
+    // and stale stores may not know jidDevice yet. Try all entries for our user.
     const participantsNode = Array.isArray(node.content) ? node.content.find((c: any) => c.tag === "participants") : null;
     if (participantsNode && Array.isArray(participantsNode.content)) {
-      const myToNode = participantsNode.content.find((n: any) => 
-        n.tag === "to" && (n.attrs.jid === selfJid || n.attrs.jid?.split(":")[0] === selfUserId || n.attrs.jid?.split(".")[0] === selfUserId)
+      const selfToNodes = participantsNode.content.filter((n: any) =>
+        n.tag === "to" && this.sameMessengerUser(n.attrs.jid, selfJid)
       );
-      if (myToNode && Array.isArray(myToNode.content)) {
-        const myEnc = myToNode.content.find((n: any) => n.tag === "enc");
-        if (myEnc && Buffer.isBuffer(myEnc.content)) {
-          logger.debug("E2EEHandler", `Found participant-specific SKDM DM from ${senderJid}`);
-          try {
-            let dmDecrypted: Buffer | null = null;
-            if (myEnc.attrs.type === "msg") {
-              dmDecrypted = await e2eeClient.decryptDMMessage(senderJid, myEnc.content);
-            } else if (myEnc.attrs.type === "pkmsg") {
-              dmDecrypted = await e2eeClient.decryptDMPreKeyMessage(senderJid, selfUserId, myEnc.content);
-            }
+      let processedSKDM = false;
 
-            if (dmDecrypted) {
-              const transport = decodeMessageTransport(dmDecrypted);
-              if (transport?.protocol?.ancillary?.skdm) {
-                const skdm = transport.protocol.ancillary.skdm;
-                const gid = skdm.groupID || skdm.groupId || chatJid;
-                const skBytes = skdm.axolotlSenderKeyDistributionMessage || skdm.skdmBytes;
-                if (skBytes) {
-                  logger.info("E2EEHandler", `Processing SKDM from participants node for group ${gid} from ${senderJid}`);
-                  await e2eeClient.processSenderKeyDistribution(senderJid, skBytes, gid);
-                }
-              }
-            }
-          } catch (err) {
-            logger.warn("E2EEHandler", `Failed to decrypt participant SKDM from ${senderJid}: ${err}`);
+      for (const toNode of selfToNodes) {
+        if (!Array.isArray(toNode.content)) continue;
+        const targetJid = typeof toNode.attrs.jid === "string" ? toNode.attrs.jid : selfJid;
+        const myEnc = toNode.content.find((n: any) => n.tag === "enc");
+        if (!myEnc || !Buffer.isBuffer(myEnc.content)) continue;
+
+        logger.debug("E2EEHandler", `Trying participant SKDM DM from ${senderJid} to ${targetJid}`);
+        try {
+          let dmDecrypted: Buffer | null = null;
+          if (myEnc.attrs.type === "msg") {
+            dmDecrypted = await e2eeClient.decryptDMMessage(senderJid, myEnc.content);
+          } else if (myEnc.attrs.type === "pkmsg") {
+            dmDecrypted = await e2eeClient.decryptDMPreKeyMessage(senderJid, targetJid, myEnc.content);
           }
+
+          if (!dmDecrypted) continue;
+          const transport = decodeMessageTransport(dmDecrypted);
+          const skdm = transport?.protocol?.ancillary?.skdm;
+          if (!skdm) continue;
+
+          const gid = skdm.groupID || skdm.groupId || chatJid;
+          const skBytes = skdm.axolotlSenderKeyDistributionMessage || skdm.skdmBytes;
+          if (skBytes) {
+            logger.info("E2EEHandler", `Processing SKDM from participants node for group ${gid} from ${senderJid}`);
+            await e2eeClient.processSenderKeyDistribution(senderJid, skBytes, gid);
+            processedSKDM = true;
+            break;
+          }
+        } catch (err) {
+          logger.debug("E2EEHandler", `Participant SKDM decrypt failed for ${targetJid}: ${err}`);
         }
+      }
+
+      if (selfToNodes.length > 0 && !processedSKDM) {
+        logger.warn("E2EEHandler", `Found ${selfToNodes.length} participant node(s) for self but no SKDM could be processed from ${senderJid}`);
       }
     }
 
@@ -96,7 +108,7 @@ export class E2EEHandler {
       if (type === "msg") {
         decrypted = await e2eeClient.decryptDMMessage(senderJid, ciphertext);
       } else if (type === "pkmsg") {
-        decrypted = await e2eeClient.decryptDMPreKeyMessage(senderJid, selfUserId, ciphertext);
+        decrypted = await e2eeClient.decryptDMPreKeyMessage(senderJid, selfJid, ciphertext);
       } else if (type === "skmsg") {
         decrypted = await e2eeClient.decryptGroupMessage(senderJid, ciphertext, fromJid);
       } else {
@@ -146,12 +158,40 @@ export class E2EEHandler {
         data: {
           type: "decryption_failed",
           error: (err as Error).message,
+          chatJid,
+          threadId: chatJid,
           senderJid,
+          senderId: this.parseMessengerJid(senderJid).user,
           messageId: node.attrs.id,
           timestampMs: now()
         }
       });
     }
+  }
+
+  private parseMessengerJid(jid: string | undefined): { user: string; device: number; server: string } {
+    const value = jid ?? "";
+    const [userPart = value, server = ""] = value.split("@");
+    const colonIdx = userPart.indexOf(":");
+    const dotIdx = userPart.indexOf(".");
+    const userEnd = dotIdx !== -1 ? dotIdx : (colonIdx !== -1 ? colonIdx : userPart.length);
+    const user = userPart.slice(0, userEnd) || userPart;
+    const rawDevice = colonIdx !== -1
+      ? userPart.slice(colonIdx + 1)
+      : (dotIdx !== -1 ? userPart.slice(dotIdx + 1) : "0");
+    return { user, device: Number(rawDevice) || 0, server };
+  }
+
+  private sameMessengerDevice(a: string | undefined, b: string): boolean {
+    const pa = this.parseMessengerJid(a);
+    const pb = this.parseMessengerJid(b);
+    return pa.server === "msgr" && pb.server === "msgr" && pa.user === pb.user && pa.device === pb.device;
+  }
+
+  private sameMessengerUser(a: string | undefined, b: string): boolean {
+    const pa = this.parseMessengerJid(a);
+    const pb = this.parseMessengerJid(b);
+    return pa.server === "msgr" && pb.server === "msgr" && pa.user === pb.user;
   }
 
   public handleIQ(node: Node) {
@@ -302,10 +342,11 @@ export class E2EEHandler {
       const devicesNode = userNode.content.find((n: any) => n.tag === "devices");
       if (!devicesNode || !Array.isArray(devicesNode.content)) continue;
       
-      const baseJid = userNode.attrs.jid; // e.g. 12345.0@msgr or 12345@msgr
-      const [userWithDevice, server] = baseJid.split("@");
-      const userId = userWithDevice.split(".")[0];
-      
+      const baseJid = userNode.attrs.jid; // e.g. 12345.0@msgr, 12345:0@msgr or 12345@msgr
+      const parsed = this.parseMessengerJid(baseJid);
+      const userId = parsed.user;
+      const server = parsed.server;
+
       for (const deviceNode of devicesNode.content) {
         if (deviceNode.tag === "device" && deviceNode.attrs.id) {
           deviceJids.push(`${userId}.${deviceNode.attrs.id}@${server}`);
@@ -376,9 +417,8 @@ export class E2EEHandler {
       return value.readUIntBE(0, Math.min(value.length, 3));
     };
     const parseDeviceId = (deviceJid: string): number => {
-      const devicePart = deviceJid.split("@")[0]?.split(".")[1];
-      const deviceId = Number(devicePart);
-      return Number.isFinite(deviceId) && deviceId > 0 ? deviceId : 1;
+      const parsed = this.parseMessengerJid(deviceJid);
+      return Number.isFinite(parsed.device) && parsed.device > 0 ? parsed.device : 1;
     };
 
     const signedPreKeyId = findTag(skey, "id")?.content;

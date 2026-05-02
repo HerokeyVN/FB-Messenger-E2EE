@@ -63,6 +63,12 @@ import { MmsType } from "./media-crypto.ts";
 
 // Types
 
+export interface DMTextFanoutPayloads {
+  type: "dm";
+  devicePayload: Buffer;
+  selfDevicePayload: Buffer;
+  frankingTag: Buffer;
+}
 
 // E2EEClient
 
@@ -91,27 +97,40 @@ export class E2EEClient {
 
   // Message encrypt (DM)
 
-  /**
-   * Build and encrypt a DM text message for Signal transport.
-   * Returns the plaintext MessageTransport bytes and frankingTag.
-   */
-  async encryptDMText(opts: E2EESendTextOptions): Promise<Extract<EncryptionResult, { type: "dm" }>> {
+  /** Build DM text transports for V3 participant fanout. */
+  async buildDMTextFanoutPayloads(opts: E2EESendTextOptions): Promise<DMTextFanoutPayloads> {
     const builder = new MessageBuilder().setText(opts.text);
     if (opts.replyToId && opts.replyToSenderJid) {
       builder.setReply(opts.replyToId, opts.replyToSenderJid);
     }
     const consumerApp = builder.build();
     const { messageApp, frankingTag } = encodeMessageApplication(consumerApp, builder.getReply());
-    const transport = encodeMessageTransport({ messageApp });
 
+    return {
+      type: "dm",
+      devicePayload: encodeMessageTransport({ messageApp }),
+      selfDevicePayload: encodeMessageTransport({
+        messageApp,
+        dsm: { destinationJid: opts.toJid, phash: "" },
+      }),
+      frankingTag,
+    };
+  }
+
+  /**
+   * Build and encrypt a DM text message for Signal transport.
+   * Kept for low-level callers; production send should fan out through participants.
+   */
+  async encryptDMText(opts: E2EESendTextOptions): Promise<Extract<EncryptionResult, { type: "dm" }>> {
+    const fanout = await this.buildDMTextFanoutPayloads(opts);
     const recipientAddr = jidToAddress(opts.toJid);
     const selfAddr = jidToAddress(opts.selfJid);
-    const encrypted = await encryptDM(this.store, recipientAddr, selfAddr, transport);
+    const encrypted = await encryptDM(this.store, recipientAddr, selfAddr, fanout.devicePayload);
 
     return {
       type: "dm",
       encrypted: { type: encrypted.type, ciphertext: Buffer.from(encrypted.ciphertext) },
-      frankingTag,
+      frankingTag: fanout.frankingTag,
     };
   }
 
@@ -139,12 +158,10 @@ export class E2EEClient {
     });
     // Per-device SKDM transport should not include application payload
     const deviceTransport = encodeMessageTransport({
-      messageApp: Buffer.alloc(0),
       skdm: { groupId: groupJid, skdmBytes: Buffer.from(skdm.serialize()) },
     });
     // DSM is included only for sender's other devices (same user, different device)
     const selfDeviceTransport = encodeMessageTransport({
-      messageApp: Buffer.alloc(0),
       skdm: { groupId: groupJid, skdmBytes: Buffer.from(skdm.serialize()) },
       dsm: { destinationJid: groupJid, phash: "" },
     });
@@ -175,8 +192,7 @@ export class E2EEClient {
   /** Encrypt an SKDM for a specific device DM. */
   async encryptSKDM(recipientJid: string, selfJid: string, skdm: { groupId: string; skdmBytes: Buffer }): Promise<{ type: "msg" | "pkmsg"; ciphertext: Buffer }> {
     const transport = encodeMessageTransport({
-      messageApp: Buffer.alloc(0), // No application payload for SKDM-only DM
-      skdm,
+      skdm, // No application payload for SKDM-only DM
     });
 
     const recipientAddr = jidToAddress(recipientJid);

@@ -184,7 +184,8 @@ export interface MediaFields {
 }
 
 export interface MessageTransportOptions {
-  messageApp: Buffer;
+  /** Application payload. Omit for SKDM-only device fanout, matching whatsmeow nil Payload. */
+  messageApp?: Buffer;
   /** Included only when sending a copy to own other devices */
   dsm?: {
     destinationJid: string;

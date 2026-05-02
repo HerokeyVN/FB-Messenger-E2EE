@@ -46,3 +46,4 @@ device.json
 *.code-workspace
 self-note.txt
 scratch/
+outbound_frames.log

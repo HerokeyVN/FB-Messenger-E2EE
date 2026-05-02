@@ -95,9 +95,32 @@ export class DeviceStore
   // Factory methods
 
   /** Create or load from a JSON file path. */
-  /** Mock for bridge compatibility */
+  /** Persist the Messenger JID assigned to this registered E2EE device. */
   setJIDs(id1: string, id2: string): void {
-    // No-op for now, just to satisfy controller
+    const jid = id1 || id2;
+    const [userPart = "", server = ""] = jid.split("@");
+    if (server !== "msgr" || !userPart) return;
+
+    const colonIdx = userPart.indexOf(":");
+    const dotIdx = userPart.indexOf(".");
+    const userEnd = dotIdx !== -1 ? dotIdx : (colonIdx !== -1 ? colonIdx : userPart.length);
+    const user = userPart.slice(0, userEnd) || userPart;
+    const rawDevice = colonIdx !== -1
+      ? userPart.slice(colonIdx + 1)
+      : (dotIdx !== -1 ? userPart.slice(dotIdx + 1) : "0");
+    const device = Number(rawDevice) || 0;
+
+    let changed = false;
+    if (user && this.jidUser !== user) {
+      this.jidUser = user;
+      changed = true;
+    }
+    if (device > 0 && this.jidDevice !== device) {
+      this.jidDevice = device;
+      changed = true;
+    }
+
+    if (changed) this.saveToFile();
   }
 
   static async fromFile(path: string): Promise<DeviceStore> {
@@ -447,6 +470,18 @@ export class DeviceStore
     logger.debug("DeviceStore", `getSenderKey: ${key}, found=${!!bytes}`);
     if (!bytes) return null as any;
     return SenderKeyRecord.deserialize(Buffer.from(bytes));
+  }
+
+  listSenderKeyDistributionIds(senderAddress: ProtocolAddress): string[] {
+    const prefix = `${senderAddress.toString()}::`;
+    const distributionIds: string[] = [];
+    for (const key of this.senderKeys.keys()) {
+      const keyString = String(key);
+      if (keyString.startsWith(prefix)) {
+        distributionIds.push(keyString.slice(prefix.length));
+      }
+    }
+    return distributionIds;
   }
 
   async _getSenderKey(sender: any, distributionId: any): Promise<any> {

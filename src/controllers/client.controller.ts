@@ -54,6 +54,7 @@ import { E2EEClient } from "../e2ee/e2ee-client.ts";
 import { FacebookE2EESocket } from "../e2ee/noise-socket.ts";
 import { FacebookDGWSocket } from "../e2ee/dgw-socket.ts";
 import { encodeClientPayload } from "../e2ee/message-builder.ts";
+import { MIN_PREKEY_COUNT, WANTED_PREKEY_COUNT } from "../e2ee/prekey-manager.ts";
 import { str, now } from "../utils/fca-utils.ts";
 import { logger } from "../utils/logger.ts";
 import { EventMapper } from "./event-mapper.ts";
@@ -67,6 +68,7 @@ export class ClientController {
   private activeDeviceStore: DeviceStore | null = null;
   private e2eeConnected: boolean = false;
   private heartbeatInterval?: NodeJS.Timeout;
+  private preKeyMaintenanceInterval?: NodeJS.Timeout;
   private userId: string = "";
 
   private readonly eventMapper: EventMapper;
@@ -150,6 +152,7 @@ export class ClientController {
   }
 
   public async connectE2EE(deviceStorePath: string, userId: string): Promise<void> {
+    this.userId = userId;
     const ds = await DeviceStore.fromFile(deviceStorePath);
     this.activeDeviceStore = ds;
 
@@ -167,6 +170,7 @@ export class ClientController {
     });
 
     noiseSocket.on("disconnected", () => {
+      this.cleanup();
       this.eventMapper.emit({ type: "disconnected", data: { isE2EE: true } });
     });
 
@@ -257,13 +261,8 @@ export class ClientController {
     await noiseSocket.sendFrame(encodePrimingNode(buildUnifiedSessionId()));
     await noiseSocket.sendFrame(encodeSetPassive("active-stream", false));
 
-    // Prekey check
-    try {
-      const serverCount = await this.e2eeHandler.getServerPreKeyCount();
-      if (serverCount < 10) await this.e2eeHandler.uploadPreKeys(80);
-    } catch (err) {
-      logger.error("ClientController", "Prekey sync failed:", err);
-    }
+    await this.syncE2EEPreKeys("startup");
+    this.startPreKeyMaintenance();
 
     this.startHeartbeat();
     await this.connectDGWIfEnabled(userId);
@@ -285,9 +284,55 @@ export class ClientController {
   private startHeartbeat() {
     this.stopHeartbeat();
     this.heartbeatInterval = setInterval(async () => {
-      if (!this.e2eeSocket) return;
-      await this.sendNoiseKeepAlive();
+      try {
+        if (!this.e2eeSocket) return;
+        await this.sendNoiseKeepAlive();
+      } catch (err) {
+        logger.error("ClientController", "E2EE heartbeat failed:", err);
+        this.eventMapper.emit({
+          type: "error",
+          data: { message: `E2EE heartbeat failed: ${(err as Error).message}` },
+        });
+      }
     }, 30000);
+  }
+
+  private startPreKeyMaintenance() {
+    this.stopPreKeyMaintenance();
+    const intervalMs = Number(process.env.FB_E2EE_PREKEY_SYNC_INTERVAL_MS ?? "1800000");
+    if (!Number.isFinite(intervalMs) || intervalMs <= 0) return;
+
+    this.preKeyMaintenanceInterval = setInterval(() => {
+      void this.syncE2EEPreKeys("periodic").catch((err) => {
+        logger.error("ClientController", "Periodic prekey sync failed:", err);
+      });
+    }, intervalMs);
+  }
+
+  private stopPreKeyMaintenance() {
+    if (this.preKeyMaintenanceInterval) {
+      clearInterval(this.preKeyMaintenanceInterval);
+      this.preKeyMaintenanceInterval = undefined;
+    }
+  }
+
+  private async syncE2EEPreKeys(reason: string): Promise<void> {
+    if (!this.e2eeSocket || !this.activeDeviceStore) return;
+
+    const minCount = Number(process.env.FB_E2EE_PREKEY_MIN_COUNT ?? String(MIN_PREKEY_COUNT));
+    const uploadCount = Number(process.env.FB_E2EE_PREKEY_UPLOAD_COUNT ?? String(WANTED_PREKEY_COUNT));
+
+    try {
+      const serverCount = await this.e2eeHandler.getServerPreKeyCount();
+      logger.info("ClientController", `E2EE prekey sync (${reason}): server has ${serverCount} prekeys`);
+
+      if (serverCount < minCount) {
+        await this.e2eeHandler.uploadPreKeys(uploadCount);
+        logger.info("ClientController", `Uploaded ${uploadCount} E2EE prekeys without changing registered device`);
+      }
+    } catch (err) {
+      logger.error("ClientController", `Prekey sync failed (${reason}):`, err);
+    }
   }
 
   private stopHeartbeat() {
@@ -299,6 +344,7 @@ export class ClientController {
 
   private cleanup() {
     this.stopHeartbeat();
+    this.stopPreKeyMaintenance();
     this.e2eeConnected = false;
   }
 
@@ -381,40 +427,79 @@ export class ClientController {
   public async sendE2EEText(threadId: string, text: string, replyToMessageId?: string): Promise<void> {
     if (!this.e2eeSocket) throw new Error("E2EE not connected");
     const e2eeClient = this.e2eeService.getClient();
-    const selfJid = this.userId + ".0@msgr";
-    const toJid = threadId.includes("@") ? threadId : (threadId.includes(".") ? threadId + "@msgr" : threadId + ".0@msgr");
+    const selfJid = this.getSelfE2EEJid();
+    const toJid = this.toBareMessengerJid(
+      threadId.includes("@") ? threadId : (threadId.includes(".") || threadId.includes(":") ? `${threadId}@msgr` : `${threadId}.0@msgr`)
+    );
+    const messageId = String(BigInt(Math.floor(Math.random() * 1e15)));
 
-    const result = await e2eeClient.encryptDMText({
+    const result = await e2eeClient.buildDMTextFanoutPayloads({
       toJid,
       selfJid,
       text,
       isGroup: false,
       replyToId: replyToMessageId,
-      replyToSenderJid: replyToMessageId ? toJid : undefined // Simple heuristic: assume reply is to the same thread
+      replyToSenderJid: replyToMessageId ? toJid : undefined,
     });
-    const messageId = String(BigInt(Math.floor(Math.random() * 1e15)));
-    const msgNode: Node = {
-      tag: "message",
-      attrs: { to: toJid, type: "chat", id: messageId },
-      content: [{ tag: "enc", attrs: { v: "3", type: result.encrypted.type }, content: result.encrypted.ciphertext }],
-    };
 
-    const { marshal: m } = await import("../e2ee/wa-binary.ts");
+    const { encodeNode, marshal: m } = await import("../e2ee/wa-binary.ts");
+    const participantNodes: Buffer[] = [];
+    const deviceJids = this.uniqueJids(await this.e2eeHandler.getDeviceList([toJid, this.toBareMessengerJid(selfJid)]));
+    if (deviceJids.length === 0) {
+      logger.warn("ClientController", `No E2EE devices discovered for ${toJid}; sending empty participant list`);
+    }
+
+    for (const deviceJid of deviceJids) {
+      if (this.sameMessengerDevice(deviceJid, selfJid)) continue;
+
+      try {
+        if (!(await e2eeClient.hasSession(deviceJid))) {
+          logger.info("ClientController", `Establishing new session with ${deviceJid}`);
+          const bundle = await this.e2eeHandler.getPreKeyBundle(deviceJid);
+          await e2eeClient.establishSession(deviceJid, bundle);
+        }
+
+        const payload = this.sameMessengerUser(deviceJid, selfJid)
+          ? result.selfDevicePayload
+          : result.devicePayload;
+        const encrypted = await e2eeClient.encryptDevicePayload(deviceJid, selfJid, payload);
+
+        participantNodes.push(encodeNode("to", { jid: deviceJid }, [
+          encodeNode("enc", { v: "3", type: encrypted.type }, encrypted.ciphertext),
+        ]));
+      } catch (err) {
+        logger.error("ClientController", `Failed to encrypt DM fanout to ${deviceJid}:`, err);
+      }
+    }
+
+    const msgNode = encodeNode("message", { to: toJid, type: "text", id: messageId }, [
+      encodeNode("participants", {}, participantNodes),
+      encodeNode("franking", {}, [
+        encodeNode("franking_tag", {}, result.frankingTag),
+      ]),
+      encodeNode("trace", {}, [
+        encodeNode("request_id", {}, Buffer.from(randomUUID().replace(/-/g, ""), "hex")),
+      ]),
+    ]);
+
     await this.e2eeSocket.sendFrame(m(msgNode));
+    logger.info("ClientController", `E2EE DM message sent to ${toJid} with ${participantNodes.length} devices`);
   }
 
   public async sendE2EEGroupText(groupJid: string, text: string, replyToMessageId?: string): Promise<void> {
     if (!this.e2eeSocket) throw new Error("E2EE not connected");
     const e2eeClient = this.e2eeService.getClient();
-    const selfJid = this.userId + ".0@msgr";
+    const selfJid = this.getSelfE2EEJid();
 
     // Fetch group participants
     logger.debug("ClientController", `Fetching participants for group: ${groupJid}`);
     const memberJids = await this.e2eeHandler.getGroupParticipants(groupJid);
     
     // Fetch device list for all members
-    logger.debug("ClientController", `Fetching devices for ${memberJids.length} members`);
-    const deviceJids = await this.e2eeHandler.getDeviceList(memberJids);
+    const deviceUsers = this.uniqueJids([...memberJids, this.toBareMessengerJid(selfJid)]);
+    logger.debug("ClientController", `Fetching devices for ${deviceUsers.length} members`);
+    const deviceJids = this.uniqueJids(await this.e2eeHandler.getDeviceList(deviceUsers))
+      .filter((jid) => !this.sameMessengerDevice(jid, selfJid));
     const messageId = String(BigInt(Math.floor(Math.random() * 1e15)));
 
     // Encrypt the main group payload
@@ -432,8 +517,6 @@ export class ClientController {
     const { encodeNode, marshal: m } = await import("../e2ee/wa-binary.ts");
 
     for (const deviceJid of deviceJids) {
-      if (deviceJid === selfJid) continue;
-
       try {
         // Establish session if missing
         if (!(await e2eeClient.hasSession(deviceJid))) {
@@ -442,9 +525,7 @@ export class ClientController {
           await e2eeClient.establishSession(deviceJid, bundle);
         }
 
-        const selfUser = selfJid.split("@")[0]?.split(".")[0]?.split(":")[0];
-        const deviceUser = deviceJid.split("@")[0]?.split(".")[0]?.split(":")[0];
-        const payload = selfUser && deviceUser && selfUser === deviceUser
+        const payload = this.sameMessengerUser(deviceJid, selfJid)
           ? result.selfDevicePayload
           : result.devicePayload;
         const skdmEnc = await e2eeClient.encryptDevicePayload(deviceJid, selfJid, payload);
@@ -484,11 +565,64 @@ export class ClientController {
     return `2:${hash.subarray(0, 6).toString("base64").replace(/=+$/, "")}`;
   }
 
+  private getSelfE2EEJid(): string {
+    const device = this.activeDeviceStore?.jidDevice ?? 0;
+    return `${this.userId}.${device}@msgr`;
+  }
+
+  private parseMessengerJid(jid: string): { user: string; device: number; server: string } {
+    const [userPart = jid, server = ""] = jid.split("@");
+    const colonIdx = userPart.indexOf(":");
+    const dotIdx = userPart.indexOf(".");
+    const userEnd = dotIdx !== -1 ? dotIdx : (colonIdx !== -1 ? colonIdx : userPart.length);
+    const user = userPart.slice(0, userEnd) || userPart;
+    const rawDevice = colonIdx !== -1
+      ? userPart.slice(colonIdx + 1)
+      : (dotIdx !== -1 ? userPart.slice(dotIdx + 1) : "0");
+    return { user, device: Number(rawDevice) || 0, server };
+  }
+
+  private toBareMessengerJid(jid: string): string {
+    const parsed = this.parseMessengerJid(jid);
+    return parsed.server === "msgr" ? `${parsed.user}.0@msgr` : jid;
+  }
+
+  private sameMessengerUser(a: string, b: string): boolean {
+    const pa = this.parseMessengerJid(a);
+    const pb = this.parseMessengerJid(b);
+    return pa.server === "msgr" && pb.server === "msgr" && pa.user === pb.user;
+  }
+
+  private sameMessengerDevice(a: string, b: string): boolean {
+    const pa = this.parseMessengerJid(a);
+    const pb = this.parseMessengerJid(b);
+    return pa.server === "msgr" && pb.server === "msgr" && pa.user === pb.user && pa.device === pb.device;
+  }
+
+  private uniqueJids(jids: string[]): string[] {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const jid of jids) {
+      if (!jid) continue;
+      const parsed = this.parseMessengerJid(jid);
+      const key = parsed.server === "msgr" ? `${parsed.user}:${parsed.device}@${parsed.server}` : jid;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(jid);
+    }
+    return out;
+  }
+
   private toAdString(jid: string): string {
     const [userPart = "", server = ""] = jid.split("@");
+    if (server === "msgr") {
+      const parsed = this.parseMessengerJid(jid);
+      if (!parsed.user) return jid;
+      return `${parsed.user}.0:${parsed.device}@${server}`;
+    }
+
     const [userAndAgent = "", devicePart = ""] = userPart.split(":");
     const [user = "", rawAgentPart = ""] = userAndAgent.split(".");
-
     const rawAgent = rawAgentPart ? Number(rawAgentPart) : 0;
     const device = devicePart ? Number(devicePart) : 0;
     if (!user) return jid;

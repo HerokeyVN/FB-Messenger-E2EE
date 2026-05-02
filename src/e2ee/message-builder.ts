@@ -454,18 +454,21 @@ export function encodeMessageApplication(
 export function encodeMessageTransport(opts: MessageTransportOptions): Buffer {
   const padding = opts.padding ?? generatePadding();
 
-  // Payload.ApplicationPayload (SubProtocol)
-  const appPayload = new ProtoWriter()
-    .bytes(1, opts.messageApp)
-    .varint(2, FB_MESSAGE_APPLICATION_VERSION)
-    .varint(3, 0) // FutureProof PLACEHOLDER
-    .build();
+  let payload: Buffer | undefined;
+  if (opts.messageApp) {
+    // Payload.ApplicationPayload (SubProtocol)
+    const appPayload = new ProtoWriter()
+      .bytes(1, opts.messageApp)
+      .varint(2, FB_MESSAGE_APPLICATION_VERSION)
+      .varint(3, 0) // FutureProof PLACEHOLDER
+      .build();
 
-  // Payload
-  const payload = new ProtoWriter()
-    .bytes(1, appPayload)
-    .varint(2, 0) // futureProof
-    .build();
+    // Payload
+    payload = new ProtoWriter()
+      .bytes(1, appPayload)
+      .varint(2, 0) // futureProof
+      .build();
+  }
 
   // Protocol.Integral
   let integral = new ProtoWriter().bytes(1, padding);
@@ -504,8 +507,9 @@ export function encodeMessageTransport(opts: MessageTransportOptions): Buffer {
     .build();
 
   // MessageTransport
-  return new ProtoWriter()
-    .bytes(1, payload)
+  const transport = new ProtoWriter();
+  if (payload) transport.bytes(1, payload);
+  return transport
     .bytes(2, protocol)
     .build();
 }

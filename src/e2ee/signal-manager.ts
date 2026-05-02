@@ -51,8 +51,25 @@ const u8 = (b: Uint8Array | undefined | null): Buffer => {
  * The agent suffix is part of the Signal user ID; the device suffix is the Signal device ID.
  */
 export function jidToAddress(jid: string): ProtocolAddress {
-  const [userPart] = jid.split("@");
-  const [userAndAgent = jid, rawDevicePart = ""] = (userPart ?? jid).split(":");
+  const [userPartRaw = jid, server = ""] = jid.split("@");
+
+  // Messenger FBJID stores the device in the FBJID device field. Our decoder
+  // represents that as either user.device@msgr or user:device@msgr, while
+  // participant hashes may use ADString form user.0:device@msgr. In all cases
+  // the Signal username is the bare FBID and the Signal device is the device id.
+  if (server === "msgr") {
+    const colonIdx = userPartRaw.indexOf(":");
+    const dotIdx = userPartRaw.indexOf(".");
+    const userEnd = dotIdx !== -1 ? dotIdx : (colonIdx !== -1 ? colonIdx : userPartRaw.length);
+    const user = userPartRaw.slice(0, userEnd) || userPartRaw;
+    const rawDevice = colonIdx !== -1
+      ? userPartRaw.slice(colonIdx + 1)
+      : (dotIdx !== -1 ? userPartRaw.slice(dotIdx + 1) : "0");
+    const device = Number(rawDevice) || 0;
+    return ProtocolAddress.new(user, device);
+  }
+
+  const [userAndAgent = jid, rawDevicePart = ""] = userPartRaw.split(":");
   const [user = jid, rawAgentPart = ""] = userAndAgent.split(".");
   const signalUser = rawAgentPart ? `${user}_${rawAgentPart}` : user;
   const device = rawDevicePart ? Number(rawDevicePart) : 0;
@@ -61,6 +78,31 @@ export function jidToAddress(jid: string): ProtocolAddress {
 
 export function addressToJidKey(addr: ProtocolAddress): string {
   return `${addr.name()}:${addr.deviceId()}`;
+}
+
+function legacyJidToAddress(jid: string): ProtocolAddress {
+  const [userPart] = jid.split("@");
+  const [userAndAgent = jid, rawDevicePart = ""] = (userPart ?? jid).split(":");
+  const [user = jid, rawAgentPart = ""] = userAndAgent.split(".");
+  const signalUser = rawAgentPart ? `${user}_${rawAgentPart}` : user;
+  const device = rawDevicePart ? Number(rawDevicePart) : 0;
+  return ProtocolAddress.new(signalUser, device);
+}
+
+function addressCandidatesForJid(jid: string): ProtocolAddress[] {
+  const candidates = [jidToAddress(jid), legacyJidToAddress(jid)];
+  const seen = new Set<string>();
+  return candidates.filter((addr) => {
+    const key = addr.toString();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function listSenderKeyDistributionIds(store: DeviceStore, senderAddr: ProtocolAddress): string[] {
+  const list = (store as any).listSenderKeyDistributionIds;
+  return typeof list === "function" ? list.call(store, senderAddr) : [];
 }
 
 // DM - X3DH session establish + Double Ratchet encrypt/decrypt
@@ -137,17 +179,35 @@ export async function processSKDM(
   const senderAddr = jidToAddress(senderJid);
   const buf = u8(skdmBytes as Buffer);
 
+  const processAndAlias = async (skdm: SenderKeyDistributionMessage): Promise<void> => {
+    const distributionId = String(skdm.distributionId());
+    await processSenderKeyDistributionMessage(senderAddr, skdm, store as any);
+
+    // Some Facebook group SKMSG packets arrive without a usable distribution ID.
+    // decryptGroup() rewraps those packets with stableDistributionId(group, sender).
+    // Alias the freshly-processed SKDM record to that deterministic ID so the
+    // immediately-following group decrypt can find the sender key state.
+    if (groupJid) {
+      const stableId = stableDistributionId(groupJid, senderJid);
+      if (stableId !== distributionId) {
+        const record = await store.getSenderKey(senderAddr, distributionId);
+        if (record) {
+          await store.saveSenderKey(senderAddr, stableId, record);
+          logger.debug("signal-manager", `Aliased sender key ${distributionId} -> ${stableId} for ${senderJid} in ${groupJid}`);
+        }
+      }
+    }
+  };
+
   // Try the standard libsignal format first. Facebook captures we have so far
   // use the same 0x33-prefixed serialized message, so we should not invent our
   // own distribution ID or signing key when the library can parse it directly.
   try {
-    const skdm = SenderKeyDistributionMessage.deserialize(buf);
-    await processSenderKeyDistributionMessage(senderAddr, skdm, store as any);
+    await processAndAlias(SenderKeyDistributionMessage.deserialize(buf));
     return;
   } catch (primaryErr) {
     if (buf[0] === 0x33 && buf.length > 1) {
-      const skdm = SenderKeyDistributionMessage.deserialize(buf.slice(1));
-      await processSenderKeyDistributionMessage(senderAddr, skdm, store as any);
+      await processAndAlias(SenderKeyDistributionMessage.deserialize(buf.slice(1)));
       return;
     }
     throw primaryErr;
@@ -199,13 +259,17 @@ export async function decryptGroup(
   ciphertext: Uint8Array,
   groupJid?: string,
 ): Promise<Buffer> {
-  const senderAddr = jidToAddress(senderJid);
+  const senderAddrs = addressCandidatesForJid(senderJid);
+  const senderAddr = senderAddrs[0]!;
   let buf = u8(ciphertext);
+  let activeDistributionId: string | undefined;
+  let rewrapInfo: { id: number; iteration: number; ciphertext: Buffer } | null = null;
 
   // If it's a Facebook-style message (version 0x33, usually lacking 64-byte signature)
   if (buf[0] === 0x33) {
     try {
-      SenderKeyMessage.deserialize(buf);
+      const msg = SenderKeyMessage.deserialize(buf);
+      activeDistributionId = String(msg.distributionId());
       // Already a valid Signal message
     } catch (e) {
       // Likely a Facebook signature-less message, needs re-encoding
@@ -229,6 +293,8 @@ export async function decryptGroup(
         distId = stableDistributionId(groupJid || "unknown", senderJid);
       }
 
+      activeDistributionId = distId;
+      rewrapInfo = { id, iteration, ciphertext: ct };
       buf = wrapAsSignalSKMSG({ distributionId: distId, id, iteration, ciphertext: ct, senderJid });
     }
   }
@@ -236,9 +302,59 @@ export async function decryptGroup(
   try {
     const result = await groupDecrypt(senderAddr, store as any, buf);
     return Buffer.from(result);
-  } catch (e: any) {
-    logger.error("signal-manager", `groupDecrypt failed: ${e.message} (op: ${e.operation})`);
-    throw e;
+  } catch (primaryErr: any) {
+    const tried = new Set<string>([`${senderAddr.toString()}::${activeDistributionId ?? "original"}`]);
+
+    // Migration fallback: older builds used a different Messenger JID ->
+    // ProtocolAddress mapping (for example user.device@msgr became
+    // user_device.0). Try the same serialized SKMSG against those legacy
+    // sender-key namespaces before giving up.
+    for (const candidateAddr of senderAddrs.slice(1)) {
+      const attemptKey = `${candidateAddr.toString()}::${activeDistributionId ?? "original"}`;
+      if (tried.has(attemptKey)) continue;
+      tried.add(attemptKey);
+      try {
+        const result = await groupDecrypt(candidateAddr, store as any, buf);
+        logger.debug("signal-manager", `groupDecrypt succeeded with legacy sender address ${candidateAddr.toString()}`);
+        return Buffer.from(result);
+      } catch (candidateErr: any) {
+        logger.debug("signal-manager", `groupDecrypt fallback failed for ${attemptKey}: ${candidateErr.message}`);
+      }
+    }
+
+    // Facebook protobuf SKMSGs do not carry a distribution ID.  The primary
+    // path uses a deterministic placeholder and processSKDM aliases fresh SKDMs
+    // to it, but existing stores may already have the right sender-key record
+    // under the real distribution ID. Rewrap the same ciphertext with each known
+    // distribution ID for this sender and let libsignal try the matching state.
+    if (rewrapInfo) {
+      for (const candidateAddr of senderAddrs) {
+        for (const distributionId of listSenderKeyDistributionIds(store, candidateAddr)) {
+          const attemptKey = `${candidateAddr.toString()}::${distributionId}`;
+          if (tried.has(attemptKey)) continue;
+          tried.add(attemptKey);
+
+          const candidateBuf = wrapAsSignalSKMSG({
+            distributionId,
+            id: rewrapInfo.id,
+            iteration: rewrapInfo.iteration,
+            ciphertext: rewrapInfo.ciphertext,
+            senderJid,
+          });
+
+          try {
+            const result = await groupDecrypt(candidateAddr, store as any, candidateBuf);
+            logger.debug("signal-manager", `groupDecrypt succeeded with sender key ${attemptKey}`);
+            return Buffer.from(result);
+          } catch (candidateErr: any) {
+            logger.debug("signal-manager", `groupDecrypt fallback failed for ${attemptKey}: ${candidateErr.message}`);
+          }
+        }
+      }
+    }
+
+    logger.error("signal-manager", `groupDecrypt failed: ${primaryErr.message} (op: ${primaryErr.operation})`);
+    throw primaryErr;
   }
 }
 

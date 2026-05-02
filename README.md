@@ -145,7 +145,6 @@ bun run tests/script/echo-e2ee.ts
 ## Documentation
 
 For the API reference and operational notes, see [DOCS.md](./DOCS.md).
-For architecture notes, see [`.agents/ARCHITECTURE.md`](./.agents/ARCHITECTURE.md).
 
 ---
 

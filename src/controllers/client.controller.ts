@@ -60,6 +60,7 @@ import { FacebookE2EESocket } from "../e2ee/transport/noise/noise-socket.ts";
 import { FacebookDGWSocket } from "../e2ee/transport/dgw/dgw-socket.ts";
 import { encodeClientPayload } from "../e2ee/message/message-builder.ts";
 import { str, now } from "../utils/fca-utils.ts";
+import { inferMimeTypeFromFileName } from "../utils/mime.ts";
 import { logger } from "../utils/logger.ts";
 import { EventMapper } from "./event-mapper.ts";
 import { DGWHandler } from "./dgw-handler.ts";
@@ -682,11 +683,12 @@ export class ClientController {
     const uploadConfig = await this.getE2EEMediaUploadConfig();
 
     const defaultMime = this.getDefaultE2EEMediaMime(mediaType);
+    const mimeType = input.mimeType ?? inferMimeTypeFromFileName(input.fileName, defaultMime);
     const media = await e2eeClient.encryptAndUploadMedia(
       uploadConfig,
       input.data,
       mediaType,
-      input.mimeType || defaultMime,
+      mimeType,
       async () => {
         logger.info("ClientController", "Media upload 401, refreshing media_conn config...");
         const refreshed = await this.e2eeHandler.getMediaUploadConfig();

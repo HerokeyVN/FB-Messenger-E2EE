@@ -8,7 +8,8 @@ export interface SendMediaInput {
   threadId: string;
   data: Buffer;
   fileName: string;
-  mimeType: string;
+  /** Optional; inferred from fileName extension when omitted. */
+  mimeType?: string;
   caption?: string;
   replyToMessageId?: string;
   /** Optional media width in pixels for E2EE image/video/sticker payloads. */

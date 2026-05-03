@@ -1,8 +1,9 @@
-import { basename, dirname, extname, isAbsolute, join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { FBClient } from "../../src/index.ts";
 import type { MessengerEvent } from "../../src/models/domain.ts";
+import { inferFileMediaKindFromMimeType, inferMimeTypeFromFileName, type FileMediaKind } from "../../src/utils/mime.ts";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = join(SCRIPT_DIR, "..", "..");
@@ -16,42 +17,15 @@ const DEFAULT_TARGET_JID = "100042415119261.0@msgr";
 const DEFAULT_DATA_DIR = join(ROOT_DIR, "tests/data");
 const DEFAULT_SEND_DELAY_MS = 2_000;
 
-const MIME_BY_EXT: Record<string, string> = {
-  ".apng": "image/apng",
-  ".avif": "image/avif",
-  ".gif": "image/gif",
-  ".jpeg": "image/jpeg",
-  ".jpg": "image/jpeg",
-  ".png": "image/png",
-  ".webp": "image/webp",
-  ".bmp": "image/bmp",
-  ".svg": "image/svg+xml",
-  ".mp4": "video/mp4",
-  ".m4v": "video/mp4",
-  ".mov": "video/quicktime",
-  ".webm": "video/webm",
-  ".mpeg": "video/mpeg",
-  ".mpg": "video/mpeg",
-  ".mp3": "audio/mpeg",
-  ".m4a": "audio/mp4",
-  ".aac": "audio/aac",
-  ".ogg": "audio/ogg; codecs=opus",
-  ".opus": "audio/ogg; codecs=opus",
-  ".wav": "audio/wav",
-  ".flac": "audio/flac",
-  ".pdf": "application/pdf",
-  ".txt": "text/plain",
-  ".json": "application/json",
-  ".csv": "text/csv",
-  ".zip": "application/zip",
-};
-
-type SendKind = "image" | "video" | "audio" | "file";
+type SendKind = FileMediaKind;
 
 interface TestMediaFile {
   path: string;
   name: string;
-  mimeType: string;
+  /** Explicit user-provided MIME override. If absent, send APIs infer from fileName. */
+  mimeType?: string;
+  /** MIME inferred for logging and choosing the send method in this test script. */
+  detectedMimeType: string;
   kind: SendKind;
 }
 
@@ -95,25 +69,15 @@ function resolvePath(pathOrRelative: string): string {
   return isAbsolute(pathOrRelative) ? pathOrRelative : join(ROOT_DIR, pathOrRelative);
 }
 
-function inferMimeType(filePath: string): string {
-  const ext = extname(filePath).toLowerCase();
-  return MIME_BY_EXT[ext] ?? "application/octet-stream";
-}
-
-function inferSendKind(mimeType: string): SendKind {
-  if (mimeType.startsWith("image/")) return "image";
-  if (mimeType.startsWith("video/")) return "video";
-  if (mimeType.startsWith("audio/")) return "audio";
-  return "file";
-}
-
 function toTestMediaFile(filePath: string, mimeOverride?: string): TestMediaFile {
-  const mimeType = mimeOverride || inferMimeType(filePath);
+  const detectedMimeType = inferMimeTypeFromFileName(filePath);
+  const effectiveMimeType = mimeOverride || detectedMimeType;
   return {
     path: filePath,
     name: basename(filePath),
-    mimeType,
-    kind: inferSendKind(mimeType),
+    mimeType: mimeOverride,
+    detectedMimeType,
+    kind: inferFileMediaKindFromMimeType(effectiveMimeType),
   };
 }
 
@@ -159,7 +123,7 @@ async function sendFileByKind(
     threadId: targetJid,
     data,
     fileName: file.name,
-    mimeType: file.mimeType,
+    ...(file.mimeType ? { mimeType: file.mimeType } : {}),
     caption,
   };
 
@@ -235,7 +199,7 @@ async function main() {
       const size = statSync(file.path).size;
       console.log(
         "send-e2ee-media",
-        `[${index + 1}/${files.length}] Sending ${file.name} (${file.kind}, ${file.mimeType}, ${size} bytes)...`,
+        `[${index + 1}/${files.length}] Sending ${file.name} (${file.kind}, ${file.mimeType ?? `auto:${file.detectedMimeType}`}, ${size} bytes)...`,
       );
 
       const result = await sendFileByKind(client, targetJid, file, caption);

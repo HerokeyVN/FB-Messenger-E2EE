@@ -284,16 +284,20 @@ export class E2EEClient {
   /**
    * Encrypt + upload media in one step.
    * Returns all fields needed to build a ConsumerApplication media message.
+   * @param refreshConfig Optional callback to refresh upload config on 401.
    */
   async encryptAndUploadMedia(
     uploadConfig: MediaUploadConfig,
     data: Buffer,
     type: MediaTypeKey,
     mimeType: string,
+    refreshConfig?: () => Promise<MediaUploadConfig>,
   ): Promise<E2EEEncryptMediaResult> {
     const mmsTypeStr = MmsType[type] as MmsTypeStr;
     const encrypted = encryptMedia(data, type);
-    const uploaded = await uploadMedia(uploadConfig, encrypted.dataToUpload, encrypted.fileEncSHA256, mmsTypeStr);
+    const uploaded = await uploadMedia(uploadConfig, encrypted.dataToUpload, encrypted.fileEncSHA256, mmsTypeStr, {
+      refreshConfig,
+    });
 
     return {
       mediaKey: encrypted.mediaKey,

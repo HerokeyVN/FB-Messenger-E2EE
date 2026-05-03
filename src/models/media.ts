@@ -26,6 +26,9 @@ export interface MediaUploadConfig {
   auth: string;
   /** Host to upload to - Messenger prefers the last host (rupload.facebook.com) */
   host: string;
+  ttl?: number;
+  authTtl?: number;
+  fetchedAtMs?: number;
 }
 
 export interface MediaUploadResult {

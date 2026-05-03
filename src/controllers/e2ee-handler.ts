@@ -23,6 +23,7 @@ import type { FacebookE2EESocket } from "../e2ee/transport/noise/noise-socket.ts
 import type { E2EEClient } from "../e2ee/application/e2ee-client.ts";
 import type { EventMapper } from "./event-mapper.ts";
 import type { RawPreKeyBundle } from "../models/e2ee.ts";
+import type { MediaUploadConfig } from "../models/media.ts";
 import { logger } from "../utils/logger.ts";
 
 type RetryReceiptHandler = (node: Node) => void | Promise<void>;
@@ -443,6 +444,68 @@ export class E2EEHandler {
         }
       }
     }
+  }
+
+
+  public async getMediaUploadConfig(): Promise<MediaUploadConfig> {
+    const id = `mc-${now()}`;
+    const iq = encodeIQ({ id, to: "s.whatsapp.net", type: "set", xmlns: "w:m" }, [
+      encodeNode("media_conn", {}, undefined),
+    ]);
+
+    logger.debug("E2EEHandler", `Sending media_conn IQ (id=${id})`);
+
+    const res = await new Promise<Node>((resolve, reject) => {
+      this.pendingIQs.set(id, { resolve, reject });
+      this.getSocket()?.sendFrame(iq).catch(reject);
+      setTimeout(() => {
+        if (this.pendingIQs.has(id)) {
+          this.pendingIQs.delete(id);
+          reject(new Error("media_conn timeout (10s)"));
+        }
+      }, 10000);
+    });
+
+    const findTag = (node: any, tag: string): any => {
+      if (node?.tag === tag) return node;
+      if (Array.isArray(node?.content)) {
+        for (const child of node.content) {
+          const found = findTag(child, tag);
+          if (found) return found;
+        }
+      }
+      return null;
+    };
+
+    const mediaConn = findTag(res, "media_conn");
+    if (!mediaConn) {
+      logger.error("E2EEHandler", `media_conn IQ response missing <media_conn> node. Full response: ${JSON.stringify(res)}`);
+      throw new Error("Missing media_conn in response");
+    }
+
+    const children = Array.isArray(mediaConn.content) ? mediaConn.content : [];
+    const hosts = children
+      .filter((child: any) => child.tag === "host" && child.attrs?.hostname)
+      .map((child: any) => String(child.attrs.hostname));
+    const host = hosts.at(-1) || process.env.FB_E2EE_MEDIA_UPLOAD_HOST || "rupload.facebook.com";
+    const auth = str(mediaConn.attrs?.auth);
+    const ttl = num(mediaConn.attrs?.ttl);
+    const authTtl = num(mediaConn.attrs?.auth_ttl);
+
+    logger.debug("E2EEHandler", `media_conn received: host=${host}, auth=${auth ? `${auth.slice(0, 12)}...` : "(empty)"}, ttl=${ttl}, auth_ttl=${authTtl}`);
+
+    if (!auth) {
+      logger.error("E2EEHandler", `media_conn response has no auth attribute. Attrs: ${JSON.stringify(mediaConn.attrs)}`);
+      throw new Error("Missing media_conn auth token");
+    }
+
+    return {
+      host,
+      auth,
+      ttl,
+      authTtl,
+      fetchedAtMs: now(),
+    };
   }
 
   public async getServerPreKeyCount(): Promise<number> {

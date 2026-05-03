@@ -91,8 +91,6 @@ Configurable environment variables:
 | `FB_E2EE_PREKEY_MIN_COUNT` | `5` | Upload more prekeys when server count falls below this. |
 | `FB_E2EE_PREKEY_UPLOAD_COUNT` | `50` | Number of fresh one-time prekeys to upload per refill. |
 
-Architecture note: `src/e2ee/*.ts` legacy shim files re-export the new layered implementation, so old imports keep working; new runtime code should import from `src/e2ee/{application,store,transport,signal,message,media,facebook}`.
-
 Group decrypt note: if local `sender_keys` for a group/sender are truly missing, the client cannot derive that key locally. On retryable decrypt failures it sends an E2EE retry receipt to request a resend/SKDM from the sender/server. The send path also keeps a short in-memory retry cache so incoming `receipt type="retry"` requests for recently-sent messages can be re-encrypted directly to the requesting device. This is different from prekey exhaustion.
 
 E2EE event identity model:

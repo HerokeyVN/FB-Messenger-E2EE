@@ -16,6 +16,7 @@ import {
 import type { DGWEndpointKind } from "../e2ee/transport/dgw/dgw-socket.ts";
 import type { Node } from "../e2ee/transport/binary/wa-binary.ts";
 import type { SessionData } from "../models/client.ts";
+import type { MediaUploadConfig } from "../models/media.ts";
 import type {
   CreateThreadInput,
   DeleteThreadInput,
@@ -82,6 +83,7 @@ export class ClientController {
   private heartbeatInterval?: NodeJS.Timeout;
   private userId: string = "";
   private readonly outgoingE2EECache = new OutboundMessageCache();
+  private e2eeUploadConfig: MediaUploadConfig | null = null;
 
   private readonly eventMapper: EventMapper;
   private readonly dgwHandler: DGWHandler;
@@ -185,9 +187,16 @@ export class ClientController {
     this.activeDeviceStore = ds;
 
     const client = new E2EEClient(ds);
-    this.e2eeService.setProvider(client, {
-      host: "rupload.facebook.com",
-      auth: "MOCK_AUTH",
+    this.e2eeUploadConfig = process.env.FB_E2EE_MEDIA_UPLOAD_AUTH
+      ? {
+        host: process.env.FB_E2EE_MEDIA_UPLOAD_HOST ?? "rupload.facebook.com",
+        auth: process.env.FB_E2EE_MEDIA_UPLOAD_AUTH,
+        fetchedAtMs: now(),
+      }
+      : null;
+    this.e2eeService.setProvider(client, this.e2eeUploadConfig ?? {
+      host: process.env.FB_E2EE_MEDIA_UPLOAD_HOST ?? "rupload.facebook.com",
+      auth: "",
     });
 
     const endpoint = "wss://web-chat-e2ee.facebook.com/ws/chat?cid=client-" + now();
@@ -298,6 +307,11 @@ export class ClientController {
     await this.preKeyMaintenance.sync("startup");
     this.preKeyMaintenance.start();
 
+    // Proactively fetch media_conn config for media uploads
+    this.fetchMediaUploadConfigProactively().catch((err) => {
+      logger.warn("ClientController", "Proactive media_conn fetch failed (will retry on first media send):", err);
+    });
+
     this.startHeartbeat();
     await this.connectDGWIfEnabled(userId);
   }
@@ -406,7 +420,7 @@ export class ClientController {
   // Messaging delegate methods
 
   public async sendMessage(input: SendMessageInput): Promise<Record<string, unknown>> {
-    const isE2EE = /^\d+$/.test(input.threadId) || input.threadId.includes("@msgr") || input.threadId.includes("@g.us") || input.threadId.includes(".g.");
+    const isE2EE = this.isE2EEThreadId(input.threadId);
     const isGroup = input.threadId.includes("@g.us") || input.threadId.includes(".g.");
 
     if (this.e2eeConnected && isE2EE) {
@@ -573,12 +587,151 @@ export class ClientController {
     return `${this.userId}.${device}@msgr`;
   }
 
+  private isE2EEThreadId(threadId: string): boolean {
+    return /^\d+$/.test(threadId) || threadId.includes("@msgr") || threadId.includes("@g.us") || threadId.includes(".g.");
+  }
+
   public async sendReaction(input: SendReactionInput): Promise<void> { await this.messagingService.react(this.requireApi(), input); }
   public async unsendMessage(messageId: string): Promise<void> { await this.messagingService.unsend(this.requireApi(), messageId); }
   public async sendTyping(input: TypingInput): Promise<void> { await this.messagingService.sendTyping(this.requireApi(), input); }
   public async markAsRead(input: MarkReadInput): Promise<void> { await this.messagingService.markAsRead(this.requireApi(), input); }
 
-  public async sendImage(input: SendMediaInput) { return this.mediaService.sendImage(this.requireApi(), input); }
+  public async sendImage(input: SendMediaInput): Promise<Record<string, unknown>> {
+    if (this.e2eeConnected && this.isE2EEThreadId(input.threadId)) {
+      return this.sendE2EEImage(input);
+    }
+    return this.mediaService.sendImage(this.requireApi(), input);
+  }
+
+
+  private async getE2EEMediaUploadConfig(): Promise<MediaUploadConfig> {
+    if (this.e2eeUploadConfig && !this.isMediaUploadConfigExpired(this.e2eeUploadConfig)) {
+      return this.e2eeUploadConfig;
+    }
+
+    logger.info("ClientController", "Fetching E2EE media upload auth via media_conn...");
+    this.e2eeUploadConfig = await this.e2eeHandler.getMediaUploadConfig();
+    this.e2eeService.setProvider(this.e2eeService.getClient(), this.e2eeUploadConfig);
+    return this.e2eeUploadConfig;
+  }
+
+  private async fetchMediaUploadConfigProactively(): Promise<void> {
+    if (!this.e2eeConnected) return;
+    try {
+      const config = await this.e2eeHandler.getMediaUploadConfig();
+      this.e2eeUploadConfig = config;
+      this.e2eeService.setProvider(this.e2eeService.getClient(), config);
+      logger.debug("ClientController", `Proactive media_conn fetched: host=${config.host}, auth=${config.auth ? `${config.auth.slice(0, 12)}...` : "(empty)"}`);
+    } catch (err) {
+      logger.warn("ClientController", "Proactive media_conn fetch failed (will retry on first media send):", err);
+      throw err;
+    }
+  }
+
+  private isMediaUploadConfigExpired(config: MediaUploadConfig): boolean {
+    // Empty auth is always invalid - never cache it
+    if (!config.auth) return true;
+    const ttlSeconds = config.authTtl ?? config.ttl;
+    if (!config.fetchedAtMs || !ttlSeconds) return false;
+    const refreshSkewMs = 60_000;
+    return now() >= config.fetchedAtMs + ttlSeconds * 1000 - refreshSkewMs;
+  }
+
+  public async sendE2EEImage(input: SendMediaInput): Promise<Record<string, unknown>> {
+    if (!this.e2eeSocket) throw new Error("E2EE not connected");
+    if (input.threadId.includes("@g.us") || input.threadId.includes(".g.")) {
+      throw new Error("E2EE group image send is not implemented yet");
+    }
+
+    const e2eeClient = this.e2eeService.getClient();
+    const selfJid = this.getSelfE2EEJid();
+    const toJid = normalizeDMThreadToJid(input.threadId);
+    const messageId = String(BigInt(Math.floor(Math.random() * 1e15)));
+
+    const uploadConfig = await this.getE2EEMediaUploadConfig();
+
+    const media = await e2eeClient.encryptAndUploadMedia(
+      uploadConfig,
+      input.data,
+      "image",
+      input.mimeType || "image/png",
+      async () => {
+        // Refresh media_conn on 401
+        logger.info("ClientController", "Media upload 401, refreshing media_conn config...");
+        const refreshed = await this.e2eeHandler.getMediaUploadConfig();
+        this.e2eeUploadConfig = refreshed;
+        this.e2eeService.setProvider(this.e2eeService.getClient(), refreshed);
+        return refreshed;
+      },
+    );
+    const consumerApp = e2eeClient.buildImageMessage({
+      ...media.mediaFields,
+      caption: input.caption,
+    });
+    const { messageApp, frankingTag } = e2eeClient.buildMessageApplication(
+      consumerApp,
+      input.replyToMessageId ? { id: input.replyToMessageId, senderJid: toJid } : undefined,
+    );
+
+    const devicePayload = e2eeClient.buildMessageTransport({ messageApp });
+    const selfDevicePayload = e2eeClient.buildMessageTransport({
+      messageApp,
+      dsm: { destinationJid: toJid, phash: "" },
+    });
+
+    const participantNodes: Buffer[] = [];
+    const deviceJids = uniqueJids(await this.e2eeHandler.getDeviceList([toJid, toBareMessengerJid(selfJid)]));
+    if (deviceJids.length === 0) {
+      logger.warn("ClientController", `No E2EE devices discovered for ${toJid}; sending empty participant list`);
+    }
+
+    for (const deviceJid of deviceJids) {
+      if (sameMessengerDevice(deviceJid, selfJid)) continue;
+
+      try {
+        if (!(await e2eeClient.hasSession(deviceJid))) {
+          logger.info("ClientController", `Establishing new session with ${deviceJid}`);
+          const bundle = await this.e2eeHandler.getPreKeyBundle(deviceJid);
+          await e2eeClient.establishSession(deviceJid, bundle);
+        }
+
+        const payload = sameMessengerUser(deviceJid, selfJid)
+          ? selfDevicePayload
+          : devicePayload;
+        const encrypted = await e2eeClient.encryptDevicePayload(deviceJid, selfJid, payload);
+
+        participantNodes.push(encodeNode("to", { jid: deviceJid }, [
+          encodeNode("enc", { v: "3", type: encrypted.type }, encrypted.ciphertext),
+        ]));
+      } catch (err) {
+        logger.error("ClientController", `Failed to encrypt E2EE image fanout to ${deviceJid}:`, err);
+      }
+    }
+
+    const msgNode = encodeNode("message", { to: toJid, type: "text", id: messageId }, [
+      encodeNode("participants", {}, participantNodes),
+      encodeNode("franking", {}, [
+        encodeNode("franking_tag", {}, frankingTag),
+      ]),
+      encodeNode("trace", {}, [
+        encodeNode("request_id", {}, Buffer.from(randomUUID().replace(/-/g, ""), "hex")),
+      ]),
+    ]);
+
+    await this.e2eeSocket.sendFrame(marshalBinary(msgNode));
+    this.outgoingE2EECache.remember({
+      kind: "dm",
+      chatJid: toJid,
+      messageId,
+      messageType: "image",
+      messageApp,
+      frankingTag,
+      createdAtMs: now(),
+    });
+    logger.info("ClientController", `E2EE image sent to ${toJid} with ${participantNodes.length} devices`);
+    return { messageId, timestampMs: now(), directPath: media.directPath };
+  }
+
   public async sendVideo(input: SendMediaInput) { return this.mediaService.sendVideo(this.requireApi(), input); }
   public async sendAudio(input: SendMediaInput) { return this.mediaService.sendAudio(this.requireApi(), input); }
   public async sendFile(input: SendMediaInput) { return this.mediaService.sendFile(this.requireApi(), input); }

@@ -257,4 +257,37 @@ describe("E2EEHandler", () => {
     expect(children.find(n => n.tag === "skey")).toBeDefined();
   });
 
+
+  it("fetches media upload config from media_conn IQ result", async () => {
+    let sentIq: Node | null = null;
+    socket.sendFrame = jest.fn<(frame: Buffer) => Promise<void>>().mockImplementation(async (frame: Buffer) => {
+      sentIq = unmarshal(frame);
+      const id = sentIq.attrs.id;
+      handler.handleIQ({
+        tag: "iq",
+        attrs: { id, type: "result", from: "s.whatsapp.net" },
+        content: [{
+          tag: "media_conn",
+          attrs: { auth: "real-auth", ttl: "3600", auth_ttl: "7200", max_buckets: "20" },
+          content: [
+            { tag: "host", attrs: { hostname: "primary.example" } },
+            { tag: "host", attrs: { hostname: "rupload.facebook.com" } },
+          ],
+        }],
+      } as any);
+    });
+
+    await expect(handler.getMediaUploadConfig()).resolves.toMatchObject({
+      host: "rupload.facebook.com",
+      auth: "real-auth",
+      ttl: 3600,
+      authTtl: 7200,
+    });
+    expect(sentIq).toMatchObject({
+      tag: "iq",
+      attrs: { to: "s.whatsapp.net", type: "set", xmlns: "w:m" },
+    });
+    expect((sentIq!.content as Node[])[0]).toMatchObject({ tag: "media_conn", attrs: {} });
+  });
+
 });

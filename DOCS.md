@@ -133,9 +133,9 @@ await client.sendReaction({
 });
 ```
 
-### `unsendMessage(messageId: string)`
+### `unsendMessage(messageId: string, threadId?: string)`
 
-Un-sends a message you previously sent.
+Un-sends a message you previously sent. For E2EE messages, pass `threadId` (or call it while the sent message is still in the outbound cache) so the client can send the revoke over the E2EE stream instead of FCA.
 
 ### `sendTyping(input: TypingInput)`
 

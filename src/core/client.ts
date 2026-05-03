@@ -147,8 +147,8 @@ export class FBClient {
     await this.controller.sendReaction(input);
   }
 
-  public async unsendMessage(messageId: string): Promise<void> {
-    await this.controller.unsendMessage(messageId);
+  public async unsendMessage(messageId: string, threadId?: string): Promise<void> {
+    await this.controller.unsendMessage(messageId, threadId);
   }
 
   public async sendTyping(input: TypingInput): Promise<void> {

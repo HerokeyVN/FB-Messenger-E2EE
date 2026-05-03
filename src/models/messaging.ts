@@ -42,7 +42,12 @@ export interface MarkReadInput {
 export interface SendReactionInput {
   messageId: string;
   reaction: string;
+  /** Thread ID or canonical E2EE chat JID containing the target message. */
   threadId: string;
+  /** Sender JID of the target E2EE message; required for reacting to someone else's group message. */
+  senderJid?: string;
+  /** Alias for senderJid for callers that prefer explicit target naming. */
+  targetSenderJid?: string;
 }
 
 export interface MuteThreadInput {

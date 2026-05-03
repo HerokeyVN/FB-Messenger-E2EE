@@ -38,6 +38,25 @@ describe("message builders", () => {
     expect(decoded.payload.content.reactionMessage.key.ID).toBe("mid.1");
   });
 
+  it("encodes E2EE group reaction message keys with remote JID and participant", () => {
+    const decoded = decodeConsumerApplication(encodeReactionMessage("7456658723671758234", "👍", {
+      remoteJid: "1805602490133470@g.us",
+      fromMe: false,
+      participant: "100042415119261.0@msgr",
+      senderTimestampMs: 1777805979855,
+    }));
+
+    const reaction = decoded.payload.content.reactionMessage;
+    expect(reaction.text).toBe("👍");
+    expect(reaction.senderTimestampMS).toBe("1777805979855");
+    expect(reaction.key).toMatchObject({
+      remoteJID: "1805602490133470@g.us",
+      fromMe: false,
+      ID: "7456658723671758234",
+      participant: "100042415119261.0@msgr",
+    });
+  });
+
   it("encodes edit consumer applications", () => {
     const decoded = decodeConsumerApplication(encodeEditMessage("mid.1", "new text"));
 
@@ -137,8 +156,12 @@ describe("message builders", () => {
   });
 
   it("encodes revoke messages as application data with a valid message key", () => {
-    const decoded = decodeConsumerApplication(encodeRevokeMessage("mid.remove", true));
+    const decoded = decodeConsumerApplication(encodeRevokeMessage("mid.remove", {
+      remoteJid: "180@g.us",
+      fromMe: true,
+    }));
 
+    expect(decoded.payload.applicationData.revoke.key.remoteJID).toBe("180@g.us");
     expect(decoded.payload.applicationData.revoke.key.ID).toBe("mid.remove");
     expect(decoded.payload.applicationData.revoke.key.fromMe).toBe(true);
   });

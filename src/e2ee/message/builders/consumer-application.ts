@@ -305,13 +305,31 @@ export function encodeStickerMessage(m: MediaFields): Buffer {
   return new ProtoWriter().bytes(1, payload).build();
 }
 
+export interface MessageKeyOptions {
+  remoteJid?: string;
+  fromMe?: boolean;
+  participant?: string;
+}
+
+export interface ReactionMessageKeyOptions extends MessageKeyOptions {
+  senderTimestampMs?: number;
+}
+
+function encodeMessageKey(messageId: string, keyOpts: MessageKeyOptions = {}): Buffer {
+  let key = new ProtoWriter();
+  if (keyOpts.remoteJid) key = key.string(1, keyOpts.remoteJid);
+  if (typeof keyOpts.fromMe === "boolean") key = key.bool(2, keyOpts.fromMe);
+  key = key.string(3, messageId);
+  if (keyOpts.participant) key = key.string(4, keyOpts.participant);
+  return key.build();
+}
+
 /** Encode a reaction message. */
-export function encodeReactionMessage(targetMessageId: string, emoji: string): Buffer {
-  const key = new ProtoWriter().string(3, targetMessageId).build();
+export function encodeReactionMessage(targetMessageId: string, emoji: string, keyOpts: ReactionMessageKeyOptions = {}): Buffer {
   const reaction = new ProtoWriter()
-    .bytes(1, key)
+    .bytes(1, encodeMessageKey(targetMessageId, keyOpts))
     .string(2, emoji)
-    .uint64_varint(4, BigInt(Date.now()))
+    .uint64_varint(4, BigInt(keyOpts.senderTimestampMs ?? Date.now()))
     .build();
   const content = new ProtoWriter().bytes(16, reaction).build();
   const payload = new ProtoWriter().bytes(1, content).build();
@@ -333,9 +351,11 @@ export function encodeEditMessage(targetMessageId: string, newText: string): Buf
 }
 
 /** Encode a revoke (unsend) message. */
-export function encodeRevokeMessage(messageId: string, fromMe: boolean): Buffer {
-  const key = new ProtoWriter().bool(2, fromMe).string(3, messageId).build();
-  const revoke = new ProtoWriter().bytes(1, key).build();
+export function encodeRevokeMessage(messageId: string, keyOptsOrFromMe: MessageKeyOptions | boolean = true): Buffer {
+  const keyOpts = typeof keyOptsOrFromMe === "boolean"
+    ? { fromMe: keyOptsOrFromMe }
+    : keyOptsOrFromMe;
+  const revoke = new ProtoWriter().bytes(1, encodeMessageKey(messageId, keyOpts)).build();
   const applicationData = new ProtoWriter().bytes(1, revoke).build();
   const payload = new ProtoWriter().bytes(2, applicationData).build();
   return new ProtoWriter().bytes(1, payload).build();

@@ -187,6 +187,44 @@ export class E2EEClient {
     };
   }
 
+  /** Build and encrypt a pre-built MessageApplication for a group send. */
+  async encryptGroupMessageApplication(
+    groupJid: string,
+    selfJid: string,
+    messageApp: Buffer,
+    messageId: string,
+  ): Promise<Omit<Extract<EncryptionResult, { type: "group" }>, "frankingTag">> {
+    const { skdm, distributionId } = await createSenderKeyDistributionMessage(this.store, groupJid, selfJid);
+
+    const groupTransport = encodeMessageTransport({
+      messageApp,
+      backupDirective: { messageId, actionType: "UPSERT" },
+    });
+    const deviceTransport = encodeMessageTransport({
+      skdm: { groupId: groupJid, skdmBytes: Buffer.from(skdm.serialize()) },
+    });
+    const selfDeviceTransport = encodeMessageTransport({
+      skdm: { groupId: groupJid, skdmBytes: Buffer.from(skdm.serialize()) },
+      dsm: { destinationJid: groupJid, phash: "" },
+    });
+
+    const groupCiphertext = await encryptGroup(this.store, groupJid, selfJid, groupTransport, distributionId);
+
+    return {
+      type: "group",
+      messageApp,
+      groupCiphertext: Buffer.from(groupCiphertext),
+      devicePayload: Buffer.from(deviceTransport),
+      selfDevicePayload: Buffer.from(selfDeviceTransport),
+      skdmPayload: Buffer.from(groupTransport),
+      skdm: {
+        groupId: groupJid,
+        skdmBytes: Buffer.from(skdm.serialize()),
+        distributionId,
+      },
+    };
+  }
+
   /** Create a sender-key distribution payload for targeted group retry responses. */
   async createSenderKeyDistributionPayload(groupJid: string, selfJid: string): Promise<{ groupId: string; skdmBytes: Buffer; distributionId: string }> {
     const { skdm, distributionId } = await createSenderKeyDistributionMessage(this.store, groupJid, selfJid);

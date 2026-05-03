@@ -51,12 +51,21 @@ export async function uploadMedia(
     });
 
     if (resp.ok) {
-      const json = await resp.json() as Record<string, string>;
+      const json = await resp.json() as Record<string, unknown>;
+      const stringField = (...keys: string[]): string => {
+        for (const key of keys) {
+          const value = json[key];
+          if (typeof value === "string") return value;
+          if (typeof value === "number") return String(value);
+        }
+        return "";
+      };
+
       return {
-        url: json.url ?? "",
-        directPath: json.direct_path ?? "",
-        handle: json.handle ?? "",
-        objectId: json.object_id ?? "",
+        url: stringField("url"),
+        directPath: stringField("direct_path", "directPath"),
+        handle: stringField("handle"),
+        objectId: stringField("object_id", "objectID", "objectId"),
       };
     }
 

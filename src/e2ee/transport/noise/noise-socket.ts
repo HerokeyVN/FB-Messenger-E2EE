@@ -187,6 +187,10 @@ export class FacebookE2EESocket extends EventEmitter {
         }
       }
     } catch (err) {
+      if (!this.isConnected) {
+        logger.debug("FacebookE2EESocket", "Read loop stopped after intentional socket close");
+        return;
+      }
       logger.error("FacebookE2EESocket", "Read loop stopped due to error:", err);
       this.isConnected = false;
       this.emit("error", err);

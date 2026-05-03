@@ -144,8 +144,12 @@ export interface E2EEEncryptMediaResult {
   fileEncSHA256: Buffer;
   fileLength: number;
   directPath: string;
+  /** Upload handle returned by the media CDN. Useful for parity with native clients. */
+  handle: string;
+  /** CDN object ID returned by upload; encoded into WAMediaTransport ancillary data. */
+  objectId: string;
   /** Pre-built MediaFields for encodeImageMessage / encodeVideoMessage / etc. */
-  mediaFields: Omit<MediaFields, "caption" | "ptt" | "fileName" | "width" | "height" | "seconds">;
+  mediaFields: Omit<MediaFields, "caption" | "ptt" | "fileName">;
 }
 
 export interface E2EEDecryptMediaOptions {
@@ -179,6 +183,10 @@ export interface MediaFields {
   mediaKey: Buffer;
   fileEncSHA256: Buffer;
   directPath: string;
+  /** Optional CDN object ID from media upload response. */
+  objectId?: string;
+  /** Unix timestamp seconds for the media key. Defaults to current time when encoding. */
+  mediaKeyTimestamp?: number;
   width?: number;
   height?: number;
   seconds?: number;

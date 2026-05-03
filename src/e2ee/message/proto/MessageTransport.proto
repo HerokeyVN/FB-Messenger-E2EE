@@ -1,71 +1,77 @@
-syntax = "proto3";
+syntax = "proto2";
 package waMsgTransport;
-option java_package = "com.whatsapp.proto";
-
-// Outer transport wrapper - this is what gets encrypted by Signal cipher
-
-message WAMediaTransport {
-  message Integral {
-    bytes fileSHA256    = 1;
-    bytes mediaKey      = 2;
-    bytes fileEncSHA256 = 3;
-    string directPath   = 4;
-    uint64 mediaKeyTimestamp = 5;
-  }
-  message Ancillary {
-    string objectID     = 7;
-    uint64 fileLengthBytes = 9;
-  }
-  Integral integral   = 1;
-  Ancillary ancillary = 2;
-}
 
 message MessageTransport {
   message Payload {
     message SubProtocol {
-      bytes payload = 1;
-      int32 version = 2;
-      enum FutureProof {
-        PLACEHOLDER = 0;
-      }
-      FutureProof futureProof = 3;
+      optional bytes payload = 1;
+      optional int32 version = 2;
     }
-    SubProtocol applicationPayload = 1;
-    int32 futureProof = 2;
+
+    optional SubProtocol applicationPayload = 1;
+    optional int32 futureProof = 3;
   }
 
   message Protocol {
     message Integral {
-      bytes padding = 1;
-      // DeviceSentMessage - included when sending a copy to own devices
       message DeviceSentMessage {
-        string destinationJID = 1;
-        string phash          = 2;
+        optional string destinationJID = 1;
+        optional string phash = 2;
       }
-      DeviceSentMessage DSM = 2;
+
+      optional bytes padding = 1;
+      optional DeviceSentMessage DSM = 2;
     }
+
     message Ancillary {
-      // SenderKeyDistributionMessage - for group messages
       message SenderKeyDistributionMessage {
-        string groupID                            = 1;
-        bytes axolotlSenderKeyDistributionMessage = 2;
+        optional string groupID = 1;
+        optional bytes axolotlSenderKeyDistributionMessage = 2;
       }
-      SenderKeyDistributionMessage skdm = 2;
-      // BackupDirective
-      message BackupDirective {
-        string messageID = 1;
-        enum ActionType {
-          UPSERT = 0;
-          REMOVE = 1;
+
+      message DeviceListMetadata {
+        optional bytes senderKeyHash = 1;
+        optional uint64 senderTimestamp = 2;
+        optional bytes recipientKeyHash = 8;
+        optional uint64 recipientTimestamp = 9;
+      }
+
+      message ICDCParticipantDevices {
+        message ICDCIdentityListDescription {
+          optional int32 seq = 1;
+          optional bytes signingDevice = 2;
+          repeated bytes unknownDevices = 3;
+          repeated int32 unknownDeviceIDs = 4;
         }
-        ActionType actionType = 2;
+
+        optional ICDCIdentityListDescription senderIdentity = 1;
+        repeated ICDCIdentityListDescription recipientIdentities = 2;
+        repeated string recipientUserJIDs = 3;
       }
-      BackupDirective backupDirective = 4;
+
+      message BackupDirective {
+        enum ActionType {
+          NOOP = 0;
+          UPSERT = 1;
+          DELETE = 2;
+          UPSERT_AND_DELETE = 3;
+        }
+
+        optional string messageID = 1;
+        optional ActionType actionType = 2;
+        optional string supplementalKey = 3;
+      }
+
+      optional SenderKeyDistributionMessage skdm = 2;
+      optional DeviceListMetadata deviceListMetadata = 3;
+      optional ICDCParticipantDevices icdc = 4;
+      optional BackupDirective backupDirective = 5;
     }
-    Integral  integral  = 1;
-    Ancillary ancillary = 2;
+
+    optional Integral integral = 1;
+    optional Ancillary ancillary = 2;
   }
 
-  Payload  payload  = 1;
-  Protocol protocol = 2;
+  optional Payload payload = 1;
+  optional Protocol protocol = 2;
 }

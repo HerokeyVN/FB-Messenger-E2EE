@@ -20,13 +20,12 @@ export function encodeMessageTransport(opts: MessageTransportOptions): Buffer {
     const appPayload = new ProtoWriter()
       .bytes(1, opts.messageApp)
       .varint(2, FB_MESSAGE_APPLICATION_VERSION)
-      .varint(3, 0) // FutureProof PLACEHOLDER
       .build();
 
     // Payload
     payload = new ProtoWriter()
       .bytes(1, appPayload)
-      .varint(2, 0) // futureProof
+      .varint(3, 0) // futureProof PLACEHOLDER
       .build();
   }
 
@@ -50,16 +49,13 @@ export function encodeMessageTransport(opts: MessageTransportOptions): Buffer {
     ancillary = ancillary.bytes(2, skdmMsg);
   }
   if (opts.backupDirective) {
-    const actionType = opts.backupDirective.actionType === "REMOVE" ? 1 : 0;
+    const actionType = opts.backupDirective.actionType === "REMOVE" ? 2 : 1;
     const backupDirectiveMsg = new ProtoWriter()
       .string(1, opts.backupDirective.messageId)
       .varint(2, actionType)
       .build();
-    ancillary = ancillary.bytes(4, backupDirectiveMsg);
+    ancillary = ancillary.bytes(5, backupDirectiveMsg);
   }
-  // BackupDirective - UPSERT by default (field 4)
-  // Omitted for now; can be added later
-
   // Protocol
   const protocol = new ProtoWriter()
     .bytes(1, integral.build())

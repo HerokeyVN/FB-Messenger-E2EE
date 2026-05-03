@@ -14,6 +14,7 @@ root.resolvePath = (origin: string, target: string) => {
 root.loadSync([
   "WACommon.proto",
   "MessageTransport.proto",
+  "WAMediaTransport.proto",
   "MessageApplication.proto",
   "ConsumerApplication.proto",
   "ArmadilloApplication.proto",
@@ -26,6 +27,11 @@ const ConsumerAppType = root.lookupType("waConsumerApplication.ConsumerApplicati
 const ArmadilloAppType = root.lookupType("waArmadilloApplication.Armadillo");
 const ICDCIdentityListType = root.lookupType("waArmadilloICDC.ICDCIdentityList");
 const SignedICDCIdentityListType = root.lookupType("waArmadilloICDC.SignedICDCIdentityList");
+const ImageTransportType = root.lookupType("WAMediaTransport.ImageTransport");
+const VideoTransportType = root.lookupType("WAMediaTransport.VideoTransport");
+const AudioTransportType = root.lookupType("WAMediaTransport.AudioTransport");
+const DocumentTransportType = root.lookupType("WAMediaTransport.DocumentTransport");
+const StickerTransportType = root.lookupType("WAMediaTransport.StickerTransport");
 
 export function decodeMessageTransport(buffer: Buffer): any {
   const msg = MsgTransportType.decode(buffer);
@@ -45,6 +51,31 @@ export function decodeConsumerApplication(buffer: Buffer): any {
 export function decodeArmadillo(buffer: Buffer): any {
   const msg = ArmadilloAppType.decode(buffer);
   return ArmadilloAppType.toObject(msg, { longs: String, enums: String, bytes: Buffer });
+}
+
+export function decodeImageTransport(buffer: Buffer): any {
+  const msg = ImageTransportType.decode(buffer);
+  return ImageTransportType.toObject(msg, { longs: Number, enums: String, bytes: Buffer });
+}
+
+export function decodeVideoTransport(buffer: Buffer): any {
+  const msg = VideoTransportType.decode(buffer);
+  return VideoTransportType.toObject(msg, { longs: Number, enums: String, bytes: Buffer });
+}
+
+export function decodeAudioTransport(buffer: Buffer): any {
+  const msg = AudioTransportType.decode(buffer);
+  return AudioTransportType.toObject(msg, { longs: Number, enums: String, bytes: Buffer });
+}
+
+export function decodeDocumentTransport(buffer: Buffer): any {
+  const msg = DocumentTransportType.decode(buffer);
+  return DocumentTransportType.toObject(msg, { longs: Number, enums: String, bytes: Buffer });
+}
+
+export function decodeStickerTransport(buffer: Buffer): any {
+  const msg = StickerTransportType.decode(buffer);
+  return StickerTransportType.toObject(msg, { longs: Number, enums: String, bytes: Buffer });
 }
 
 export function encodeICDCIdentityList(data: {

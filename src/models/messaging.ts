@@ -11,6 +11,16 @@ export interface SendMediaInput {
   mimeType: string;
   caption?: string;
   replyToMessageId?: string;
+  /** Optional media width in pixels for E2EE image/video/sticker payloads. */
+  width?: number;
+  /** Optional media height in pixels for E2EE image/video/sticker payloads. */
+  height?: number;
+  /** Optional media duration in whole seconds for E2EE video/audio payloads. */
+  seconds?: number;
+  /** Alias for seconds, kept for callers that use media-style naming. */
+  duration?: number;
+  /** Whether E2EE audio should be sent as push-to-talk/voice. Defaults to true for sendAudio. */
+  ptt?: boolean;
 }
 
 export interface SendStickerInput {

@@ -1,6 +1,11 @@
 import { describe, it, expect } from "@jest/globals";
 import {
   decodeConsumerApplication,
+  decodeImageTransport,
+  decodeVideoTransport,
+  decodeAudioTransport,
+  decodeDocumentTransport,
+  decodeStickerTransport,
   decodeMessageApplication,
   decodeMessageTransport,
   encodeClientPayload,
@@ -55,56 +60,79 @@ describe("message builders", () => {
     seconds: 9,
     ptt: true,
     fileName: "file.pdf",
+    objectId: "object-123",
+    mediaKeyTimestamp: 1710000000,
   };
 
-  it("encodes image messages using the image oneof and media sub-protocol", () => {
+  it("encodes image messages using the image oneof and nested WAMediaTransport", () => {
     const decoded = decodeConsumerApplication(encodeImageMessage(media));
     const image = decoded.payload.content.imageMessage;
+    const transport = decodeImageTransport(image.image.payload);
+    const common = transport.integral.transport;
 
     expect(image.caption.text).toBe("hello media");
     expect(image.image.version).toBe(1);
-    expect(image.image.payload).toEqual(expect.any(Buffer));
-    expect(image.image.payload.includes(media.fileSHA256)).toBe(true);
-    expect(image.image.payload.includes(Buffer.from(media.directPath))).toBe(true);
+    expect(common.integral.fileSHA256).toEqual(media.fileSHA256);
+    expect(common.integral.mediaKey).toEqual(media.mediaKey);
+    expect(common.integral.fileEncSHA256).toEqual(media.fileEncSHA256);
+    expect(common.integral.directPath).toBe(media.directPath);
+    expect(common.integral.mediaKeyTimestamp).toBe(media.mediaKeyTimestamp);
+    expect(common.ancillary.mimetype).toBe("image/png");
+    expect(common.ancillary.fileLength).toBe(media.fileLength);
+    expect(common.ancillary.objectID).toBe("object-123");
+    expect(common.ancillary.thumbnail).toMatchObject({ thumbnailWidth: 640, thumbnailHeight: 480 });
+    expect(transport.ancillary).toMatchObject({ width: 640, height: 480 });
     expect(decoded.payload.content.contactMessage).toBeUndefined();
   });
 
   it("encodes video messages using the video oneof, not contactMessage", () => {
     const decoded = decodeConsumerApplication(encodeVideoMessage({ ...media, mimeType: "video/mp4" }));
     const video = decoded.payload.content.videoMessage;
+    const transport = decodeVideoTransport(video.video.payload);
+    const common = transport.integral.transport;
 
     expect(video.caption.text).toBe("hello media");
     expect(video.video.version).toBe(1);
-    expect(video.video.payload.includes(Buffer.from("video/mp4"))).toBe(true);
+    expect(common.ancillary.mimetype).toBe("video/mp4");
+    expect(transport.ancillary).toMatchObject({ width: 640, height: 480, seconds: 9, gifPlayback: false });
     expect(decoded.payload.content.contactMessage).toBeUndefined();
   });
 
   it("encodes audio messages using the audio oneof with PTT metadata", () => {
     const decoded = decodeConsumerApplication(encodeAudioMessage({ ...media, mimeType: "audio/ogg" }));
     const audio = decoded.payload.content.audioMessage;
+    const transport = decodeAudioTransport(audio.audio.payload);
+    const common = transport.integral.transport;
 
     expect(audio.PTT).toBe(true);
     expect(audio.audio.version).toBe(1);
-    expect(audio.audio.payload.includes(Buffer.from("audio/ogg"))).toBe(true);
+    expect(common.ancillary.mimetype).toBe("audio/ogg");
+    expect(transport.ancillary.seconds).toBe(9);
     expect(decoded.payload.content.locationMessage).toBeUndefined();
   });
 
   it("encodes document messages using the document oneof with filename", () => {
     const decoded = decodeConsumerApplication(encodeDocumentMessage({ ...media, mimeType: "application/pdf" }));
     const document = decoded.payload.content.documentMessage;
+    const transport = decodeDocumentTransport(document.document.payload);
+    const common = transport.integral.transport;
 
     expect(document.fileName).toBe("file.pdf");
     expect(document.document.version).toBe(1);
-    expect(document.document.payload.includes(Buffer.from("application/pdf"))).toBe(true);
+    expect(common.ancillary.mimetype).toBe("application/pdf");
+    expect(common.ancillary.objectID).toBe("object-123");
     expect(decoded.payload.content.extendedTextMessage).toBeUndefined();
   });
 
   it("encodes sticker messages using the sticker oneof", () => {
     const decoded = decodeConsumerApplication(encodeStickerMessage({ ...media, mimeType: "image/webp", caption: undefined }));
     const sticker = decoded.payload.content.stickerMessage;
+    const transport = decodeStickerTransport(sticker.sticker.payload);
+    const common = transport.integral.transport;
 
     expect(sticker.sticker.version).toBe(1);
-    expect(sticker.sticker.payload.includes(Buffer.from("image/webp"))).toBe(true);
+    expect(common.ancillary.mimetype).toBe("image/webp");
+    expect(transport.ancillary).toMatchObject({ width: 640, height: 480 });
     expect(decoded.payload.content.statusTextMessage).toBeUndefined();
   });
 
@@ -149,7 +177,7 @@ describe("message builders", () => {
     expect(decoded.protocol.integral.DSM).toMatchObject({ destinationJID: "200.0@msgr", phash: "hash" });
     expect(decoded.protocol.ancillary.skdm.groupID).toBe("180@g.us");
     expect(decoded.protocol.ancillary.skdm.axolotlSenderKeyDistributionMessage).toEqual(skdmBytes);
-    expect(decoded.protocol.ancillary.backupDirective).toMatchObject({ messageID: "mid.1", actionType: "REMOVE" });
+    expect(decoded.protocol.ancillary.backupDirective).toMatchObject({ messageID: "mid.1", actionType: "DELETE" });
   });
 
   it("encodes SKDM-only transports without application payload", () => {

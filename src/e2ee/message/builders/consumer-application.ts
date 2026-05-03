@@ -120,67 +120,148 @@ function encodeMessageText(text: string): Buffer {
   return new ProtoWriter().string(1, text).build();
 }
 
+const MEDIA_TRANSPORT_VERSION = 1;
+
 function encodeMediaSubProtocol(payload: Buffer): Buffer {
   return new ProtoWriter()
     .bytes(1, payload)
-    .varint(2, 1)
+    .varint(2, MEDIA_TRANSPORT_VERSION)
     .build();
 }
 
-function encodeImageVideoMediaPayload(m: MediaFields): Buffer {
-  let w = new ProtoWriter()
-    .string(2, m.mimeType)
-    .bytes(3, m.fileSHA256)
-    .uint64_varint(4, BigInt(m.fileLength))
-    .bytes(5, m.mediaKey)
-    .bytes(6, m.fileEncSHA256)
-    .string(7, m.directPath);
-  if (m.seconds !== undefined) w = w.varint(8, m.seconds);
-  if (m.width !== undefined) w = w.varint(18, m.width);
-  if (m.height !== undefined) w = w.varint(19, m.height);
-  return w.build();
+function mediaKeyTimestampSeconds(m: MediaFields): bigint {
+  const seconds = m.mediaKeyTimestamp ?? Math.floor(Date.now() / 1000);
+  return BigInt(Math.max(0, Math.trunc(seconds)));
 }
 
-function encodeAudioMediaPayload(m: MediaFields): Buffer {
-  let w = new ProtoWriter()
-    .string(1, m.mimeType)
-    .bytes(2, m.fileSHA256)
-    .uint64_varint(3, BigInt(m.fileLength))
-    .bytes(4, m.mediaKey)
-    .bytes(5, m.fileEncSHA256)
-    .string(6, m.directPath);
-  if (m.seconds !== undefined) w = w.varint(7, m.seconds);
-  return w.build();
+function optionalDimension(value: number | undefined): number | undefined {
+  return value === undefined ? undefined : Math.max(0, Math.trunc(value));
 }
 
-function encodeDocumentMediaPayload(m: MediaFields): Buffer {
-  let w = new ProtoWriter()
-    .string(2, m.mimeType)
-    .bytes(4, m.fileSHA256)
-    .uint64_varint(5, BigInt(m.fileLength))
-    .bytes(6, m.mediaKey)
-    .bytes(7, m.fileEncSHA256)
-    .string(8, m.directPath);
-  if (m.fileName) w = w.string(3, m.fileName);
-  return w.build();
+function encodeDownloadableThumbnailMetadata(m: MediaFields): Buffer | undefined {
+  const width = optionalDimension(m.width);
+  const height = optionalDimension(m.height);
+  if (width === undefined && height === undefined) return undefined;
+
+  let thumbnail = new ProtoWriter();
+  if (width !== undefined) thumbnail = thumbnail.varint(3, width);
+  if (height !== undefined) thumbnail = thumbnail.varint(4, height);
+  return thumbnail.build();
 }
 
-function encodeStickerMediaPayload(m: MediaFields): Buffer {
-  let w = new ProtoWriter()
-    .string(1, m.mimeType)
-    .bytes(2, m.fileSHA256)
-    .uint64_varint(3, BigInt(m.fileLength))
-    .bytes(4, m.mediaKey)
-    .bytes(5, m.fileEncSHA256)
-    .string(6, m.directPath);
-  if (m.width !== undefined) w = w.varint(7, m.width);
-  if (m.height !== undefined) w = w.varint(8, m.height);
-  return w.build();
+/**
+ * Encode WAMediaTransport.WAMediaTransport.
+ *
+ * Modern Messenger media messages no longer carry a flat media payload directly in
+ * ImageMessage/VideoMessage/etc. They carry a WACommon.SubProtocol whose payload
+ * is a concrete media transport (ImageTransport, VideoTransport, ...). Each media
+ * transport then nests this common WAMediaTransport with the encrypted-file
+ * checksums, key, direct path, mimetype, file length and upload object ID.
+ */
+function encodeCommonMediaTransport(m: MediaFields, includeThumbnailMetadata: boolean): Buffer {
+  const integral = new ProtoWriter()
+    .bytes(1, m.fileSHA256)
+    .bytes(2, m.mediaKey)
+    .bytes(3, m.fileEncSHA256)
+    .string(4, m.directPath)
+    .uint64_varint(5, mediaKeyTimestampSeconds(m))
+    .build();
+
+  let ancillary = new ProtoWriter()
+    .uint64_varint(1, BigInt(Math.max(0, Math.trunc(m.fileLength))))
+    .string(2, m.mimeType);
+
+  const thumbnail = includeThumbnailMetadata ? encodeDownloadableThumbnailMetadata(m) : undefined;
+  if (thumbnail) ancillary = ancillary.bytes(3, thumbnail);
+  if (m.objectId) ancillary = ancillary.string(4, m.objectId);
+
+  return new ProtoWriter()
+    .bytes(1, integral)
+    .bytes(2, ancillary.build())
+    .build();
+}
+
+function encodeMediaTransportIntegral(commonTransport: Buffer): Buffer {
+  return new ProtoWriter().bytes(1, commonTransport).build();
+}
+
+function encodeImageTransportPayload(m: MediaFields): Buffer {
+  const width = optionalDimension(m.width);
+  const height = optionalDimension(m.height);
+  const transport = encodeCommonMediaTransport(m, true);
+
+  let ancillary = new ProtoWriter();
+  if (height !== undefined) ancillary = ancillary.varint(1, height);
+  if (width !== undefined) ancillary = ancillary.varint(2, width);
+
+  return new ProtoWriter()
+    .bytes(1, encodeMediaTransportIntegral(transport))
+    .bytes(2, ancillary.build())
+    .build();
+}
+
+function encodeVideoTransportPayload(m: MediaFields): Buffer {
+  const width = optionalDimension(m.width);
+  const height = optionalDimension(m.height);
+  const seconds = optionalDimension(m.seconds);
+  const transport = encodeCommonMediaTransport(m, true);
+
+  let ancillary = new ProtoWriter();
+  if (seconds !== undefined) ancillary = ancillary.varint(1, seconds);
+  // Native Messenger sends gifPlayback explicitly as false for normal videos.
+  ancillary = ancillary.bool(3, false);
+  if (height !== undefined) ancillary = ancillary.varint(4, height);
+  if (width !== undefined) ancillary = ancillary.varint(5, width);
+
+  return new ProtoWriter()
+    .bytes(1, encodeMediaTransportIntegral(transport))
+    .bytes(2, ancillary.build())
+    .build();
+}
+
+function encodeAudioTransportPayload(m: MediaFields): Buffer {
+  const seconds = optionalDimension(m.seconds);
+  const transport = encodeCommonMediaTransport(m, false);
+
+  let ancillary = new ProtoWriter();
+  if (seconds !== undefined) ancillary = ancillary.varint(1, seconds);
+
+  return new ProtoWriter()
+    .bytes(1, encodeMediaTransportIntegral(transport))
+    .bytes(2, ancillary.build())
+    .build();
+}
+
+function encodeDocumentTransportPayload(m: MediaFields): Buffer {
+  const transport = encodeCommonMediaTransport(m, false);
+  return new ProtoWriter()
+    .bytes(1, encodeMediaTransportIntegral(transport))
+    .bytes(2, Buffer.alloc(0))
+    .build();
+}
+
+function encodeStickerTransportPayload(m: MediaFields): Buffer {
+  const width = optionalDimension(m.width);
+  const height = optionalDimension(m.height);
+  const transport = encodeCommonMediaTransport(m, true);
+
+  const integral = new ProtoWriter()
+    .bytes(1, transport)
+    .build();
+
+  let ancillary = new ProtoWriter();
+  if (height !== undefined) ancillary = ancillary.varint(2, height);
+  if (width !== undefined) ancillary = ancillary.varint(3, width);
+
+  return new ProtoWriter()
+    .bytes(1, integral)
+    .bytes(2, ancillary.build())
+    .build();
 }
 
 /** Encode a ConsumerApplication image message. */
 export function encodeImageMessage(m: MediaFields): Buffer {
-  let w = new ProtoWriter().bytes(1, encodeMediaSubProtocol(encodeImageVideoMediaPayload(m)));
+  let w = new ProtoWriter().bytes(1, encodeMediaSubProtocol(encodeImageTransportPayload(m)));
   if (m.caption) w = w.bytes(2, encodeMessageText(m.caption));
   const content = new ProtoWriter().bytes(2, w.build()).build();
   const payload = new ProtoWriter().bytes(1, content).build();
@@ -189,7 +270,7 @@ export function encodeImageMessage(m: MediaFields): Buffer {
 
 /** Encode a ConsumerApplication video message. */
 export function encodeVideoMessage(m: MediaFields): Buffer {
-  let w = new ProtoWriter().bytes(1, encodeMediaSubProtocol(encodeImageVideoMediaPayload(m)));
+  let w = new ProtoWriter().bytes(1, encodeMediaSubProtocol(encodeVideoTransportPayload(m)));
   if (m.caption) w = w.bytes(2, encodeMessageText(m.caption));
   const content = new ProtoWriter().bytes(9, w.build()).build();
   const payload = new ProtoWriter().bytes(1, content).build();
@@ -198,7 +279,7 @@ export function encodeVideoMessage(m: MediaFields): Buffer {
 
 /** Encode a ConsumerApplication audio/voice message. */
 export function encodeAudioMessage(m: MediaFields): Buffer {
-  let w = new ProtoWriter().bytes(1, encodeMediaSubProtocol(encodeAudioMediaPayload(m)));
+  let w = new ProtoWriter().bytes(1, encodeMediaSubProtocol(encodeAudioTransportPayload(m)));
   if (m.ptt) w = w.bool(2, true);
   const content = new ProtoWriter().bytes(8, w.build()).build();
   const payload = new ProtoWriter().bytes(1, content).build();
@@ -207,7 +288,7 @@ export function encodeAudioMessage(m: MediaFields): Buffer {
 
 /** Encode a ConsumerApplication document message. */
 export function encodeDocumentMessage(m: MediaFields): Buffer {
-  let w = new ProtoWriter().bytes(1, encodeMediaSubProtocol(encodeDocumentMediaPayload(m)));
+  let w = new ProtoWriter().bytes(1, encodeMediaSubProtocol(encodeDocumentTransportPayload(m)));
   if (m.fileName) w = w.string(2, m.fileName);
   const content = new ProtoWriter().bytes(7, w.build()).build();
   const payload = new ProtoWriter().bytes(1, content).build();
@@ -217,7 +298,7 @@ export function encodeDocumentMessage(m: MediaFields): Buffer {
 /** Encode a ConsumerApplication sticker message. */
 export function encodeStickerMessage(m: MediaFields): Buffer {
   const stickerMsg = new ProtoWriter()
-    .bytes(1, encodeMediaSubProtocol(encodeStickerMediaPayload(m)))
+    .bytes(1, encodeMediaSubProtocol(encodeStickerTransportPayload(m)))
     .build();
   const content = new ProtoWriter().bytes(12, stickerMsg).build();
   const payload = new ProtoWriter().bytes(1, content).build();

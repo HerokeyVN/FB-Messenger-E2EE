@@ -48,7 +48,7 @@ describe("E2EEService", () => {
   it.each([
     ["sendImage", "image", "image/jpeg", { data: Buffer.from("image") }],
     ["sendVideo", "video", "video/mp4", { data: Buffer.from("video") }],
-    ["sendAudio", "audio", "audio/mp4", { data: Buffer.from("audio") }],
+    ["sendAudio", "audio", "audio/ogg; codecs=opus", { data: Buffer.from("audio") }],
     ["sendDocument", "document", "application/octet-stream", { data: Buffer.from("doc") }],
     ["sendSticker", "image", "image/webp", { data: Buffer.from("sticker") }],
   ] as const)("%s encrypts and uploads media with the expected defaults", async (method, type, mimeType, opts) => {

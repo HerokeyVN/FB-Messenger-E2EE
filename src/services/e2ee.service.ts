@@ -101,7 +101,7 @@ export class E2EEService {
       this.uploadConfig!,
       opts.data,
       "audio",
-      opts.mimeType || "audio/mp4"
+      opts.mimeType || "audio/ogg; codecs=opus"
     );
     return { messageId: "mock-id", timestampMs: Date.now() };
   }

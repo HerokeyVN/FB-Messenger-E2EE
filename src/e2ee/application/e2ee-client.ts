@@ -299,12 +299,16 @@ export class E2EEClient {
       refreshConfig,
     });
 
+    const mediaKeyTimestamp = Math.floor(Date.now() / 1000);
+
     return {
       mediaKey: encrypted.mediaKey,
       fileSHA256: encrypted.fileSHA256,
       fileEncSHA256: encrypted.fileEncSHA256,
       fileLength: encrypted.fileLength,
       directPath: uploaded.directPath,
+      handle: uploaded.handle,
+      objectId: uploaded.objectId,
       mediaFields: {
         mimeType,
         fileSHA256: encrypted.fileSHA256,
@@ -312,6 +316,8 @@ export class E2EEClient {
         mediaKey: encrypted.mediaKey,
         fileEncSHA256: encrypted.fileEncSHA256,
         directPath: uploaded.directPath,
+        objectId: uploaded.objectId,
+        mediaKeyTimestamp,
       },
     };
   }

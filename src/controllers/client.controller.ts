@@ -17,6 +17,7 @@ import type { DGWEndpointKind } from "../e2ee/transport/dgw/dgw-socket.ts";
 import type { Node } from "../e2ee/transport/binary/wa-binary.ts";
 import type { SessionData } from "../models/client.ts";
 import type { MediaUploadConfig } from "../models/media.ts";
+import type { MediaFields } from "../models/e2ee.ts";
 import type {
   CreateThreadInput,
   DeleteThreadInput,
@@ -54,6 +55,7 @@ import { ThreadService } from "../services/thread.service.ts";
 
 import { DeviceStore } from "../e2ee/store/device-store.ts";
 import { E2EEClient } from "../e2ee/application/e2ee-client.ts";
+import type { MediaTypeKey } from "../e2ee/media/media-crypto.ts";
 import { FacebookE2EESocket } from "../e2ee/transport/noise/noise-socket.ts";
 import { FacebookDGWSocket } from "../e2ee/transport/dgw/dgw-socket.ts";
 import { encodeClientPayload } from "../e2ee/message/message-builder.ts";
@@ -73,6 +75,8 @@ import {
   toBareMessengerJid,
   uniqueJids,
 } from "../e2ee/application/fanout-planner.ts";
+
+type E2EEDMMediaType = Extract<MediaTypeKey, "image" | "video" | "audio" | "document">;
 
 export class ClientController {
   private api: FCAApi | null = null;
@@ -596,14 +600,7 @@ export class ClientController {
   public async sendTyping(input: TypingInput): Promise<void> { await this.messagingService.sendTyping(this.requireApi(), input); }
   public async markAsRead(input: MarkReadInput): Promise<void> { await this.messagingService.markAsRead(this.requireApi(), input); }
 
-  public async sendImage(input: SendMediaInput): Promise<Record<string, unknown>> {
-    if (this.e2eeConnected && this.isE2EEThreadId(input.threadId)) {
-      return this.sendE2EEImage(input);
-    }
-    return this.mediaService.sendImage(this.requireApi(), input);
-  }
-
-
+  // --- E2EE Media Upload Config ---
   private async getE2EEMediaUploadConfig(): Promise<MediaUploadConfig> {
     if (this.e2eeUploadConfig && !this.isMediaUploadConfigExpired(this.e2eeUploadConfig)) {
       return this.e2eeUploadConfig;
@@ -638,9 +635,43 @@ export class ClientController {
   }
 
   public async sendE2EEImage(input: SendMediaInput): Promise<Record<string, unknown>> {
+    return this.sendE2EEMediaDM(input, "image", (fields) => (
+      this.e2eeService.getClient().buildImageMessage({ ...fields, caption: input.caption })
+    ));
+  }
+
+  public async sendE2EEVideo(input: SendMediaInput): Promise<Record<string, unknown>> {
+    return this.sendE2EEMediaDM(input, "video", (fields) => (
+      this.e2eeService.getClient().buildVideoMessage({ ...fields, caption: input.caption })
+    ));
+  }
+
+  public async sendE2EEAudio(input: SendMediaInput): Promise<Record<string, unknown>> {
+    return this.sendE2EEMediaDM(input, "audio", (fields) => (
+      this.e2eeService.getClient().buildAudioMessage(fields)
+    ));
+  }
+
+  public async sendE2EEFile(input: SendMediaInput): Promise<Record<string, unknown>> {
+    return this.sendE2EEMediaDM(input, "document", (fields) => (
+      this.e2eeService.getClient().buildDocumentMessage({ ...fields, fileName: input.fileName })
+    ));
+  }
+
+  /**
+   * Common E2EE media send for one-to-one Messenger chats.
+   * Mirrors whatsmeow's V3 node shape: message type="media" and mediatype on
+   * each encrypted participant payload so current Messenger clients render the
+   * decrypted payload as image/video/audio/document instead of broken text.
+   */
+  private async sendE2EEMediaDM(
+    input: SendMediaInput,
+    mediaType: E2EEDMMediaType,
+    buildMessage: (fields: MediaFields) => Buffer,
+  ): Promise<Record<string, unknown>> {
     if (!this.e2eeSocket) throw new Error("E2EE not connected");
     if (input.threadId.includes("@g.us") || input.threadId.includes(".g.")) {
-      throw new Error("E2EE group image send is not implemented yet");
+      throw new Error(`E2EE group ${mediaType} send is not implemented yet`);
     }
 
     const e2eeClient = this.e2eeService.getClient();
@@ -650,13 +681,13 @@ export class ClientController {
 
     const uploadConfig = await this.getE2EEMediaUploadConfig();
 
+    const defaultMime = this.getDefaultE2EEMediaMime(mediaType);
     const media = await e2eeClient.encryptAndUploadMedia(
       uploadConfig,
       input.data,
-      "image",
-      input.mimeType || "image/png",
+      mediaType,
+      input.mimeType || defaultMime,
       async () => {
-        // Refresh media_conn on 401
         logger.info("ClientController", "Media upload 401, refreshing media_conn config...");
         const refreshed = await this.e2eeHandler.getMediaUploadConfig();
         this.e2eeUploadConfig = refreshed;
@@ -664,10 +695,10 @@ export class ClientController {
         return refreshed;
       },
     );
-    const consumerApp = e2eeClient.buildImageMessage({
-      ...media.mediaFields,
-      caption: input.caption,
-    });
+
+    const mediaFields = this.withE2EEMediaDefaults(media.mediaFields, mediaType, input);
+    const nodeMediaType = this.getE2EENodeMediaType(mediaType, mediaFields);
+    const consumerApp = buildMessage(mediaFields);
     const { messageApp, frankingTag } = e2eeClient.buildMessageApplication(
       consumerApp,
       input.replyToMessageId ? { id: input.replyToMessageId, senderJid: toJid } : undefined,
@@ -701,14 +732,14 @@ export class ClientController {
         const encrypted = await e2eeClient.encryptDevicePayload(deviceJid, selfJid, payload);
 
         participantNodes.push(encodeNode("to", { jid: deviceJid }, [
-          encodeNode("enc", { v: "3", type: encrypted.type }, encrypted.ciphertext),
+          encodeNode("enc", { v: "3", type: encrypted.type, mediatype: nodeMediaType }, encrypted.ciphertext),
         ]));
       } catch (err) {
-        logger.error("ClientController", `Failed to encrypt E2EE image fanout to ${deviceJid}:`, err);
+        logger.error("ClientController", `Failed to encrypt E2EE ${mediaType} fanout to ${deviceJid}:`, err);
       }
     }
 
-    const msgNode = encodeNode("message", { to: toJid, type: "text", id: messageId }, [
+    const msgNode = encodeNode("message", { to: toJid, type: "media", id: messageId }, [
       encodeNode("participants", {}, participantNodes),
       encodeNode("franking", {}, [
         encodeNode("franking_tag", {}, frankingTag),
@@ -723,18 +754,87 @@ export class ClientController {
       kind: "dm",
       chatJid: toJid,
       messageId,
-      messageType: "image",
+      messageType: mediaType,
       messageApp,
       frankingTag,
       createdAtMs: now(),
     });
-    logger.info("ClientController", `E2EE image sent to ${toJid} with ${participantNodes.length} devices`);
-    return { messageId, timestampMs: now(), directPath: media.directPath };
+    logger.info("ClientController", `E2EE ${mediaType} sent to ${toJid} with ${participantNodes.length} devices`);
+    return {
+      messageId,
+      timestampMs: now(),
+      directPath: media.directPath,
+      handle: media.handle,
+      objectId: media.objectId,
+    };
   }
 
-  public async sendVideo(input: SendMediaInput) { return this.mediaService.sendVideo(this.requireApi(), input); }
-  public async sendAudio(input: SendMediaInput) { return this.mediaService.sendAudio(this.requireApi(), input); }
-  public async sendFile(input: SendMediaInput) { return this.mediaService.sendFile(this.requireApi(), input); }
+  private getDefaultE2EEMediaMime(mediaType: E2EEDMMediaType): string {
+    switch (mediaType) {
+      case "image":
+        return "image/jpeg";
+      case "video":
+        return "video/mp4";
+      case "audio":
+        return "audio/ogg; codecs=opus";
+      case "document":
+        return "application/octet-stream";
+    }
+  }
+
+  private withE2EEMediaDefaults(fields: Omit<MediaFields, "caption" | "ptt" | "fileName">, mediaType: E2EEDMMediaType, input: SendMediaInput): MediaFields {
+    const mediaFields: MediaFields = { ...fields };
+
+    if (mediaType === "image" || mediaType === "video") {
+      mediaFields.width = input.width ?? fields.width ?? 400;
+      mediaFields.height = input.height ?? fields.height ?? 400;
+    }
+    if (mediaType === "video") {
+      mediaFields.seconds = input.seconds ?? input.duration ?? fields.seconds ?? 0;
+    }
+    if (mediaType === "audio") {
+      mediaFields.seconds = input.seconds ?? input.duration ?? fields.seconds ?? 0;
+      mediaFields.ptt = input.ptt ?? true;
+    }
+    if (mediaType === "document") {
+      mediaFields.fileName = input.fileName;
+    }
+
+    return mediaFields;
+  }
+
+  private getE2EENodeMediaType(mediaType: E2EEDMMediaType, fields: MediaFields): string {
+    if (mediaType === "audio" && fields.ptt) return "ptt";
+    return mediaType;
+  }
+
+  public async sendImage(input: SendMediaInput): Promise<Record<string, unknown>> {
+    if (this.e2eeConnected && this.isE2EEThreadId(input.threadId)) {
+      return this.sendE2EEImage(input);
+    }
+    return this.mediaService.sendImage(this.requireApi(), input);
+  }
+
+  public async sendVideo(input: SendMediaInput): Promise<Record<string, unknown>> {
+    if (this.e2eeConnected && this.isE2EEThreadId(input.threadId)) {
+      return this.sendE2EEVideo(input);
+    }
+    return this.mediaService.sendVideo(this.requireApi(), input);
+  }
+
+  public async sendAudio(input: SendMediaInput): Promise<Record<string, unknown>> {
+    if (this.e2eeConnected && this.isE2EEThreadId(input.threadId)) {
+      return this.sendE2EEAudio(input);
+    }
+    return this.mediaService.sendAudio(this.requireApi(), input);
+  }
+
+  public async sendFile(input: SendMediaInput): Promise<Record<string, unknown>> {
+    if (this.e2eeConnected && this.isE2EEThreadId(input.threadId)) {
+      return this.sendE2EEFile(input);
+    }
+    return this.mediaService.sendFile(this.requireApi(), input);
+  }
   public async sendSticker(input: SendStickerInput) { return this.mediaService.sendSticker(this.requireApi(), input); }
   public async downloadMedia(input: DownloadMediaInput) { return this.mediaService.downloadMedia(input); }
 

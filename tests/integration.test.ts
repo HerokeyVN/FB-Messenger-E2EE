@@ -68,9 +68,7 @@ function makeServices() {
   const controller = new ClientController(
     authService,
     gateway,
-    messagingService,
     mediaService,
-    threadService,
     e2eeService,
     icdcService,
     eventBus,
@@ -483,18 +481,18 @@ describe("ClientController event mapping", () => {
 // ClientController - requireApi guard
 // =============================================================================
 
-describe("ClientController requireApi guard", () => {
-  test("sendMessage throws when not connected", async () => {
+describe("ClientController E2EE-only guard", () => {
+  test("sendMessage rejects non-E2EE thread IDs", async () => {
     const { controller } = makeServices();
     await expect(
       controller.sendMessage({ threadId: "t.1", text: "hi" }),
-    ).rejects.toThrow("Client is not connected");
+    ).rejects.toThrow("sendMessage is E2EE-only");
   });
 
-  test("muteThread throws when not connected", async () => {
+  test("sendMessage requires connectE2EE before E2EE sends", async () => {
     const { controller } = makeServices();
     await expect(
-      controller.muteThread({ threadId: "t.1", muteSeconds: -1 }),
-    ).rejects.toThrow("Client is not connected");
+      controller.sendMessage({ threadId: "1001.0@msgr", text: "hi" }),
+    ).rejects.toThrow("sendMessage requires an active E2EE connection");
   });
 });

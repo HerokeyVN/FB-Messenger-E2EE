@@ -1,7 +1,7 @@
 {
   "name": "fb-messenger-e2ee",
   "version": "0.1.0",
-  "description": "Bringing End-to-End Encryption to Messenger. A robust, modular TS toolkit for the Signal Protocol and Facebook's next-gen DGW architecture",
+  "description": "E2EE-only TypeScript/Bun toolkit for Facebook Messenger Noise, Signal Protocol, WA-binary, media, and DGW flows",
   "main": "src/index.ts",
   "module": "src/index.ts",
   "type": "module",

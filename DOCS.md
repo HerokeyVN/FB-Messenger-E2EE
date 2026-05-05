@@ -20,7 +20,7 @@ new FBClient(options: ClientOptions)
 |---|---|---|
 | `appStatePath` | `string` | Path to Facebook appState/cookies JSON. |
 | `appState` | `any[] \| string` | Optional in-memory appState alternative. |
-| `sessionStorePath` | `string` | Optional path for non-E2EE session metadata. |
+| `sessionStorePath` | `string` | Optional path for login/session metadata used by E2EE bootstrap. |
 | `platform` | `"facebook" \| "messenger"` | Login platform hint. Defaults to `"facebook"`. |
 
 ---
@@ -29,7 +29,7 @@ new FBClient(options: ClientOptions)
 
 ### `connect()`
 
-Initializes the `fca-unofficial` bridge, configures the non-E2EE API, stores session metadata when configured, and starts the normal Messenger listener.
+Initializes the minimal `fca-unofficial` login bridge required for appState auth/CAT bootstrap and stores session metadata when configured. It does **not** expose or start plaintext/non-E2EE messaging/listening.
 
 ```typescript
 const { userId } = await client.connect();
@@ -56,7 +56,7 @@ Behavior:
 
 ### `disconnect()`
 
-Stops heartbeats, periodic prekey maintenance, DGW/E2EE sockets, and the FCA listener.
+Stops heartbeats, periodic prekey maintenance, DGW/E2EE sockets, and the internal auth bridge.
 
 ---
 
@@ -99,108 +99,85 @@ A group `skmsg` needs a matching local `sender_keys` record. If the local sender
 
 ---
 
-## Messaging
+## E2EE-only public API
+
+This package no longer delegates plaintext/non-E2EE actions to `fca-unofficial`.
+Use this package for Messenger E2EE only; use `fca-unofficial` directly in your app for classic/non-E2EE messaging, thread management, history, polls, etc.
+
+All send APIs require:
+
+1. `await client.connect()`
+2. `await client.connectE2EE(deviceStorePath, userId)`
+3. an E2EE-capable thread identifier (`1234567890`, `1234567890.0@msgr`, or `180...@g.us`)
 
 ### `sendMessage(input: SendMessageInput)`
 
-Sends a text message. When E2EE is connected and the thread ID looks like an E2EE user/group JID, the controller routes through the E2EE path; otherwise it uses FCA.
+Sends an E2EE text message. There is no plaintext FCA fallback.
 
 ```typescript
-await client.sendMessage({
-  threadId: "1234567890",
+const sent = await client.sendMessage({
+  threadId: "1234567890.0@msgr",
   text: "hello",
   replyToMessageId: "optional-message-id",
 });
+console.log(sent.messageId);
 ```
 
 **SendMessageInput**
 
 | Field | Type | Description |
 |---|---|---|
-| `threadId` | `string` | User ID, `@msgr` JID, or group JID. |
+| `threadId` | `string` | Numeric user ID, `@msgr` JID, or group JID. |
 | `text` | `string` | Message body. |
 | `replyToMessageId` | `string` | Optional replied message ID. |
 
-E2EE failures are not downgraded to plaintext FCA sends.
-
 ### `sendReaction(input: SendReactionInput)`
+
+Sends an E2EE reaction. For group messages from someone else, pass `senderJid` so the target `MessageKey` is encoded correctly.
 
 ```typescript
 await client.sendReaction({
-  threadId: "1234567890",
-  messageId: "mid...",
+  threadId: "1805602490133470@g.us",
+  messageId: "7456658723671758234",
+  senderJid: "100042415119261.145@msgr",
   reaction: "👍",
 });
 ```
 
 ### `unsendMessage(messageId: string, threadId?: string)`
 
-Un-sends a message you previously sent. For E2EE messages, pass `threadId` (or call it while the sent message is still in the outbound cache) so the client can send the revoke over the E2EE stream instead of FCA.
+Un-sends/revokes an E2EE message you previously sent. Pass `threadId` unless the original send result is still in the short outbound cache.
+
+```typescript
+await client.unsendMessage(sent.messageId, "1234567890.0@msgr");
+```
 
 ### `sendTyping(input: TypingInput)`
 
-```typescript
-await client.sendTyping({ threadId: "1234567890", isTyping: true });
-```
-
-### `markAsRead(input: MarkReadInput)`
+Sends E2EE chatstate (`composing` / `paused`) over the Noise socket.
 
 ```typescript
-await client.markAsRead({ threadId: "1234567890" });
+await client.sendTyping({ threadId: "1234567890.0@msgr", isTyping: true });
+await new Promise(resolve => setTimeout(resolve, 5000));
+await client.sendTyping({ threadId: "1234567890.0@msgr", isTyping: false });
 ```
 
 ---
 
-## Media Handling
+## E2EE Media Handling
 
 ### `sendImage` / `sendVideo` / `sendAudio` / `sendFile`
 
+These helpers encrypt, upload, and send E2EE media for one-to-one Messenger E2EE chats. MIME type is inferred from `fileName` when omitted. Group E2EE media send is not implemented yet.
+
 ```typescript
 await client.sendImage({
-  threadId: "1234567890",
+  threadId: "1234567890.0@msgr",
   data: imageBuffer,
   fileName: "image.jpg",
-  mimeType: "image/jpeg",
   caption: "optional caption",
 });
 ```
-
-Current note: E2EE media send is still incomplete in the architecture notes; plain media helpers delegate to the existing media service.
-
-### `sendSticker(input: SendStickerInput)`
-
-```typescript
-await client.sendSticker({ threadId: "1234567890", stickerId: 123 });
-```
-
-### `downloadMedia(input: DownloadMediaInput)`
-
-Downloads raw bytes from a Facebook CDN URL.
-
-```typescript
-const bytes = await client.downloadMedia({ url });
-```
-
----
-
-## Thread & Group Management
-
-- `createThread(input: { userId: string })`
-- `addGroupMember(input)`
-- `removeGroupMember(input)`
-- `renameThread(input: { threadId: string; newName: string })`
-- `setGroupPhoto(input)`
-- `changeAdminStatus(input)`
-- `muteThread(input: { threadId: string; muteSeconds: number })`
-- `deleteThread(input: { threadId: string })`
-- `searchUsers(input: { query: string })`
-- `getUserInfo(input: { userId: string })`
-- `getThreadList(input)`
-- `getThreadHistory(input)`
-- `forwardAttachment(input)`
-- `createPoll(input)`
-- `editMessage(input)`
-- `getFriendsList()`
 
 ---
 

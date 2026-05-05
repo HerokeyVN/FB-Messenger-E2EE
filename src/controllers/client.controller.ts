@@ -2,7 +2,6 @@ import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import type { FCAApi } from "fca-unofficial";
 
-import type { MessengerEvent } from "../models/domain.ts";
 import {
   unmarshal,
   encodeNode,
@@ -19,19 +18,9 @@ import type { SessionData } from "../models/client.ts";
 import type { MediaUploadConfig } from "../models/media.ts";
 import type { MediaFields } from "../models/e2ee.ts";
 import type {
-  CreateThreadInput,
-  DeleteThreadInput,
-  DownloadMediaInput,
-  GetUserInfoInput,
-  MarkReadInput,
-  MuteThreadInput,
-  RenameThreadInput,
-  SearchUsersInput,
   SendMediaInput,
   SendMessageInput,
   SendReactionInput,
-  SendStickerInput,
-  SetGroupPhotoInput,
   TypingInput,
 } from "../models/messaging.ts";
 import type { AuthConfig } from "../models/config.ts";
@@ -39,20 +28,7 @@ import { AuthService } from "../services/auth.service.ts";
 import type { E2EEService } from "../services/e2ee.service.ts";
 import { FacebookGatewayService } from "../services/facebook-gateway.service.ts";
 import { MediaService } from "../services/media.service.ts";
-import { MessagingService } from "../services/messaging.service.ts";
 import { ICDCService } from "../services/icdc.service.ts";
-import type {
-  AddGroupMemberInput,
-  ChangeAdminStatusInput,
-  CreatePollInput,
-  EditMessageInput,
-  ForwardAttachmentInput,
-  GetThreadHistoryInput,
-  GetThreadListInput,
-  RemoveGroupMemberInput,
-} from "../models/thread.ts";
-import { ThreadService } from "../services/thread.service.ts";
-
 import { DeviceStore } from "../e2ee/store/device-store.ts";
 import { E2EEClient } from "../e2ee/application/e2ee-client.ts";
 import type { MediaTypeKey } from "../e2ee/media/media-crypto.ts";
@@ -106,9 +82,7 @@ export class ClientController {
   public constructor(
     private readonly authService: AuthService,
     private readonly gateway: FacebookGatewayService,
-    private readonly messagingService: MessagingService,
     private readonly mediaService: MediaService,
-    private readonly threadService: ThreadService,
     private readonly e2eeService: E2EEService,
     private readonly icdcService: ICDCService,
     private readonly eventBus: EventEmitter,
@@ -157,16 +131,6 @@ export class ClientController {
     }
 
     this.api = api;
-
-    void this.gateway.startListening(
-      api,
-      event => this.eventMapper.emitMappedEvent(event),
-      error =>
-        this.eventBus.emit("event", {
-          type: "error",
-          data: { message: error.message },
-        } satisfies MessengerEvent),
-    );
 
     this.userId = userId;
     return { userId };
@@ -432,15 +396,11 @@ export class ClientController {
   // Messaging delegate methods
 
   public async sendMessage(input: SendMessageInput): Promise<Record<string, unknown>> {
-    const isE2EE = this.isE2EEThreadId(input.threadId);
-    const isGroup = input.threadId.includes("@g.us") || input.threadId.includes(".g.");
-
-    if (this.e2eeConnected && isE2EE) {
-      return isGroup
-        ? this.sendE2EEGroupText(input.threadId, input.text, input.replyToMessageId)
-        : this.sendE2EEText(input.threadId, input.text, input.replyToMessageId);
-    }
-    return this.messagingService.sendText(this.requireApi(), input);
+    this.assertE2EEReadyForThread(input.threadId, "sendMessage");
+    const isGroup = this.isE2EEGroupThread(input.threadId);
+    return isGroup
+      ? this.sendE2EEGroupText(input.threadId, input.text, input.replyToMessageId)
+      : this.sendE2EEText(input.threadId, input.text, input.replyToMessageId);
   }
 
   public async sendE2EEText(threadId: string, text: string, replyToMessageId?: string): Promise<E2EESendMessageResult> {
@@ -604,12 +564,18 @@ export class ClientController {
     return /^\d+$/.test(threadId) || threadId.includes("@msgr") || threadId.includes("@g.us") || threadId.includes(".g.");
   }
 
-  public async sendReaction(input: SendReactionInput): Promise<void> {
-    if (this.e2eeConnected && this.isE2EEThreadId(input.threadId)) {
-      await this.sendE2EEReaction(input);
-      return;
+  private assertE2EEReadyForThread(threadId: string, operation: string): void {
+    if (!this.isE2EEThreadId(threadId)) {
+      throw new Error(`${operation} is E2EE-only. Pass a Messenger E2EE user/group JID or numeric user ID, and use fca-unofficial directly for non-E2EE threads.`);
     }
-    await this.messagingService.react(this.requireApi(), input);
+    if (!this.e2eeConnected || !this.e2eeSocket) {
+      throw new Error(`${operation} requires an active E2EE connection. Call connectE2EE() before using this E2EE-only API.`);
+    }
+  }
+
+  public async sendReaction(input: SendReactionInput): Promise<void> {
+    this.assertE2EEReadyForThread(input.threadId, "sendReaction");
+    await this.sendE2EEReaction(input);
   }
 
   public async sendE2EEReaction(input: SendReactionInput): Promise<void> {
@@ -772,14 +738,12 @@ export class ClientController {
   public async unsendMessage(messageId: string, threadId?: string): Promise<void> {
     const cached = this.outgoingE2EECache.get(messageId);
     const e2eeThreadId = threadId ?? cached?.chatJid;
-
-    if (e2eeThreadId && this.isE2EEThreadId(e2eeThreadId)) {
-      if (!this.e2eeConnected) throw new Error("E2EE not connected");
-      await this.sendE2EEUnsend(e2eeThreadId, messageId);
-      return;
+    if (!e2eeThreadId) {
+      throw new Error("unsendMessage is E2EE-only and requires threadId when the target message is not in the outbound cache.");
     }
 
-    await this.messagingService.unsend(this.requireApi(), messageId);
+    this.assertE2EEReadyForThread(e2eeThreadId, "unsendMessage");
+    await this.sendE2EEUnsend(e2eeThreadId, messageId);
   }
 
   public async sendE2EEUnsend(threadId: string, targetMessageId: string): Promise<void> {
@@ -919,11 +883,8 @@ export class ClientController {
   }
 
   public async sendTyping(input: TypingInput): Promise<void> {
-    if (this.e2eeConnected && this.isE2EEThreadId(input.threadId)) {
-      await this.sendE2EETyping(input);
-      return;
-    }
-    await this.messagingService.sendTyping(this.requireApi(), input);
+    this.assertE2EEReadyForThread(input.threadId, "sendTyping");
+    await this.sendE2EETyping(input);
   }
 
   public async sendE2EETyping(input: TypingInput): Promise<void> {
@@ -940,8 +901,6 @@ export class ClientController {
     await this.e2eeSocket.sendFrame(marshalBinary(node));
     logger.info("ClientController", `E2EE typing ${state} sent to ${chatJid}`);
   }
-  public async markAsRead(input: MarkReadInput): Promise<void> { await this.messagingService.markAsRead(this.requireApi(), input); }
-
   // --- E2EE Media Upload Config ---
   private async getE2EEMediaUploadConfig(): Promise<MediaUploadConfig> {
     if (this.e2eeUploadConfig && !this.isMediaUploadConfigExpired(this.e2eeUploadConfig)) {
@@ -1152,53 +1111,24 @@ export class ClientController {
   }
 
   public async sendImage(input: SendMediaInput): Promise<Record<string, unknown>> {
-    if (this.e2eeConnected && this.isE2EEThreadId(input.threadId)) {
-      return this.sendE2EEImage(input);
-    }
-    return this.mediaService.sendImage(this.requireApi(), input);
+    this.assertE2EEReadyForThread(input.threadId, "sendImage");
+    return this.sendE2EEImage(input);
   }
 
   public async sendVideo(input: SendMediaInput): Promise<Record<string, unknown>> {
-    if (this.e2eeConnected && this.isE2EEThreadId(input.threadId)) {
-      return this.sendE2EEVideo(input);
-    }
-    return this.mediaService.sendVideo(this.requireApi(), input);
+    this.assertE2EEReadyForThread(input.threadId, "sendVideo");
+    return this.sendE2EEVideo(input);
   }
 
   public async sendAudio(input: SendMediaInput): Promise<Record<string, unknown>> {
-    if (this.e2eeConnected && this.isE2EEThreadId(input.threadId)) {
-      return this.sendE2EEAudio(input);
-    }
-    return this.mediaService.sendAudio(this.requireApi(), input);
+    this.assertE2EEReadyForThread(input.threadId, "sendAudio");
+    return this.sendE2EEAudio(input);
   }
 
   public async sendFile(input: SendMediaInput): Promise<Record<string, unknown>> {
-    if (this.e2eeConnected && this.isE2EEThreadId(input.threadId)) {
-      return this.sendE2EEFile(input);
-    }
-    return this.mediaService.sendFile(this.requireApi(), input);
+    this.assertE2EEReadyForThread(input.threadId, "sendFile");
+    return this.sendE2EEFile(input);
   }
-  public async sendSticker(input: SendStickerInput) { return this.mediaService.sendSticker(this.requireApi(), input); }
-  public async downloadMedia(input: DownloadMediaInput) { return this.mediaService.downloadMedia(input); }
-
-  public async muteThread(input: MuteThreadInput) { await this.mediaService.muteThread(this.requireApi(), input); }
-  public async renameThread(input: RenameThreadInput) { await this.mediaService.renameThread(this.requireApi(), input); }
-  public async setGroupPhoto(input: SetGroupPhotoInput) { await this.mediaService.setGroupPhoto(this.requireApi(), input); }
-  public async deleteThread(input: DeleteThreadInput) { await this.mediaService.deleteThread(this.requireApi(), input); }
-  public async createThread(input: CreateThreadInput) { return this.mediaService.createThread(this.requireApi(), input); }
-
-  public async searchUsers(input: SearchUsersInput) { return this.mediaService.searchUsers(this.requireApi(), input); }
-  public async getUserInfo(input: GetUserInfoInput) { return this.mediaService.getUserInfo(this.requireApi(), input); }
-
-  public async getThreadList(input: GetThreadListInput) { return this.threadService.getThreadList(this.requireApi(), input); }
-  public async getThreadHistory(input: GetThreadHistoryInput) { return this.threadService.getThreadHistory(this.requireApi(), input); }
-  public async forwardAttachment(input: ForwardAttachmentInput) { await this.threadService.forwardAttachment(this.requireApi(), input); }
-  public async createPoll(input: CreatePollInput) { await this.threadService.createPoll(this.requireApi(), input); }
-  public async editMessage(input: EditMessageInput) { return this.threadService.editMessage(this.requireApi(), input); }
-  public async addGroupMember(input: AddGroupMemberInput) { await this.threadService.addGroupMember(this.requireApi(), input); }
-  public async removeGroupMember(input: RemoveGroupMemberInput) { await this.threadService.removeGroupMember(this.requireApi(), input); }
-  public async changeAdminStatus(input: ChangeAdminStatusInput) { await this.threadService.changeAdminStatus(this.requireApi(), input); }
-  public async getFriendsList() { return this.threadService.getFriendsList(this.requireApi()); }
 
   private requireApi(): FCAApi {
     if (!this.api) throw new Error("Client is not connected");

@@ -4,7 +4,7 @@
 [![Bun](https://img.shields.io/badge/Bun-1.0+-black.svg)](https://bun.sh/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-**FME - FB Messenger E2EE** is a TypeScript/Bun toolkit for connecting to Facebook Messenger with support for standard Messenger events and Messenger E2EE flows built on Noise, WA-binary, protobuf, and the Signal Protocol.
+**FME - FB Messenger E2EE** is a TypeScript/Bun toolkit focused on Facebook Messenger E2EE flows built on Noise, WA-binary, protobuf, and the Signal Protocol. Plaintext/non-E2EE messaging is intentionally left to `fca-unofficial` directly.
 
 ---
 
@@ -14,7 +14,7 @@
 - **Group sender-key support**: group `skmsg` decrypt/encrypt plus participant fanout of sender-key distribution messages (`skdm`).
 - **Device persistence**: JSON-backed `DeviceStore` keeps Noise keys, Signal identity, sessions, prekeys, signed prekeys, and sender keys across restarts.
 - **Automatic prekey maintenance**: replenishes server-side one-time prekeys without deleting or re-registering the E2EE device.
-- **Typed events**: catch-all and typed event subscriptions for normal Messenger events, E2EE messages, receipts, reactions, errors, and raw frames.
+- **Typed E2EE events**: catch-all and typed event subscriptions for E2EE messages, receipts, reactions, errors, and raw frames.
 - **DGW support**: optional Direct Gateway / LightSpeed socket helpers.
 
 ---
@@ -25,7 +25,7 @@
 - **Language**: [TypeScript](https://www.typescriptlang.org/)
 - **Encryption**: [@signalapp/libsignal-client](https://github.com/signalapp/libsignal-client)
 - **Protocol**: ProtobufJS + manual WA-binary/protobuf encoders
-- **Base Bridge**: [fca-unofficial](https://github.com/VangBanLaNhat/fca-unofficial) for non-E2EE login/listen/send only
+- **Auth bootstrap bridge**: [fca-unofficial](https://github.com/VangBanLaNhat/fca-unofficial) is used internally only for appState login/CAT bootstrap; use it directly for non-E2EE messaging.
 
 ---
 
@@ -118,7 +118,7 @@ src/
 │   ├── media/       # Media crypto/upload
 │   └── facebook/    # FB-specific SKMSG/SKDM/ICDC helpers
 ├── models/         # TypeScript interfaces & domain models
-├── services/       # Auth, FCA gateway, messaging, media, ICDC, E2EE facade
+├── services/       # Auth/CAT bridge, ICDC, E2EE facade, media helpers
 ├── repositories/   # Session persistence
 └── utils/          # Logger and conversion helpers
 ```

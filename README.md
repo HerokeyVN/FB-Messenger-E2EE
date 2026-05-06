@@ -34,7 +34,9 @@
 ### 1. Installation
 
 ```bash
-bun install
+npm install fb-messenger-e2ee
+# or
+bun add fb-messenger-e2ee
 ```
 
 ### 2. Basic Usage
@@ -143,12 +145,6 @@ bun run tests/script/echo-e2ee.ts
 ## Documentation
 
 For the API reference and operational notes, see [DOCS.md](./DOCS.md).
-
----
-
-## Acknowledgements
-
-Special thanks to the [fca-unofficial](https://github.com/VangBanLaNhat/fca-unofficial) team for the foundational bridge work.
 
 ---
 

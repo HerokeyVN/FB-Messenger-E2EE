@@ -31,5 +31,26 @@
   },
   "trustedDependencies": [
     "@signalapp/libsignal-client"
-  ]
+  ],
+  "directories": {
+    "example": "examples",
+    "test": "tests"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/HerokeyVN/FB-Messenger-E2EE.git"
+  },
+  "keywords": [
+    "facebook",
+    "messenger",
+    "e2ee",
+    "encode",
+    "encrypt"
+  ],
+  "author": "HerokeyVN",
+  "license": "AGPL-3.0-or-later",
+  "bugs": {
+    "url": "https://github.com/HerokeyVN/FB-Messenger-E2EE/issues"
+  },
+  "homepage": "https://github.com/HerokeyVN/FB-Messenger-E2EE#readme"
 }

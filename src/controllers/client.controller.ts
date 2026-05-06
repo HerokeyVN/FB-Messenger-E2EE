@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import type { FCAApi } from "fca-unofficial";
 
+import type { MessengerEvent } from "../models/domain.ts";
 import {
   unmarshal,
   encodeNode,
@@ -18,9 +19,19 @@ import type { SessionData } from "../models/client.ts";
 import type { MediaUploadConfig } from "../models/media.ts";
 import type { MediaFields } from "../models/e2ee.ts";
 import type {
+  CreateThreadInput,
+  DeleteThreadInput,
+  DownloadMediaInput,
+  GetUserInfoInput,
+  MarkReadInput,
+  MuteThreadInput,
+  RenameThreadInput,
+  SearchUsersInput,
   SendMediaInput,
   SendMessageInput,
   SendReactionInput,
+  SendStickerInput,
+  SetGroupPhotoInput,
   TypingInput,
 } from "../models/messaging.ts";
 import type { AuthConfig } from "../models/config.ts";
@@ -28,7 +39,20 @@ import { AuthService } from "../services/auth.service.ts";
 import type { E2EEService } from "../services/e2ee.service.ts";
 import { FacebookGatewayService } from "../services/facebook-gateway.service.ts";
 import { MediaService } from "../services/media.service.ts";
+import { MessagingService } from "../services/messaging.service.ts";
 import { ICDCService } from "../services/icdc.service.ts";
+import type {
+  AddGroupMemberInput,
+  ChangeAdminStatusInput,
+  CreatePollInput,
+  EditMessageInput,
+  ForwardAttachmentInput,
+  GetThreadHistoryInput,
+  GetThreadListInput,
+  RemoveGroupMemberInput,
+} from "../models/thread.ts";
+import { ThreadService } from "../services/thread.service.ts";
+
 import { DeviceStore } from "../e2ee/store/device-store.ts";
 import { E2EEClient } from "../e2ee/application/e2ee-client.ts";
 import type { MediaTypeKey } from "../e2ee/media/media-crypto.ts";
@@ -36,7 +60,6 @@ import { FacebookE2EESocket } from "../e2ee/transport/noise/noise-socket.ts";
 import { FacebookDGWSocket } from "../e2ee/transport/dgw/dgw-socket.ts";
 import { encodeClientPayload } from "../e2ee/message/message-builder.ts";
 import { str, now } from "../utils/fca-utils.ts";
-import { inferMimeTypeFromFileName } from "../utils/mime.ts";
 import { logger } from "../utils/logger.ts";
 import { EventMapper } from "./event-mapper.ts";
 import { DGWHandler } from "./dgw-handler.ts";
@@ -52,15 +75,6 @@ import {
   toBareMessengerJid,
   uniqueJids,
 } from "../e2ee/application/fanout-planner.ts";
-
-type E2EEDMMediaType = Extract<MediaTypeKey, "image" | "video" | "audio" | "document">;
-
-interface E2EESendMessageResult extends Record<string, unknown> {
-  messageId: string;
-  timestampMs: number;
-}
-
-const E2EE_EDIT_SENDER_REVOKE = "7";
 
 export class ClientController {
   private api: FCAApi | null = null;
@@ -82,7 +96,9 @@ export class ClientController {
   public constructor(
     private readonly authService: AuthService,
     private readonly gateway: FacebookGatewayService,
+    private readonly messagingService: MessagingService,
     private readonly mediaService: MediaService,
+    private readonly threadService: ThreadService,
     private readonly e2eeService: E2EEService,
     private readonly icdcService: ICDCService,
     private readonly eventBus: EventEmitter,
@@ -131,6 +147,16 @@ export class ClientController {
     }
 
     this.api = api;
+
+    void this.gateway.startListening(
+      api,
+      event => this.eventMapper.emitMappedEvent(event),
+      error =>
+        this.eventBus.emit("event", {
+          type: "error",
+          data: { message: error.message },
+        } satisfies MessengerEvent),
+    );
 
     this.userId = userId;
     return { userId };
@@ -396,20 +422,26 @@ export class ClientController {
   // Messaging delegate methods
 
   public async sendMessage(input: SendMessageInput): Promise<Record<string, unknown>> {
-    this.assertE2EEReadyForThread(input.threadId, "sendMessage");
-    const isGroup = this.isE2EEGroupThread(input.threadId);
-    return isGroup
-      ? this.sendE2EEGroupText(input.threadId, input.text, input.replyToMessageId)
-      : this.sendE2EEText(input.threadId, input.text, input.replyToMessageId);
+    const isE2EE = this.isE2EEThreadId(input.threadId);
+    const isGroup = input.threadId.includes("@g.us") || input.threadId.includes(".g.");
+
+    if (this.e2eeConnected && isE2EE) {
+      if (isGroup) {
+        await this.sendE2EEGroupText(input.threadId, input.text, input.replyToMessageId);
+      } else {
+        await this.sendE2EEText(input.threadId, input.text, input.replyToMessageId);
+      }
+      return { messageId: `e2ee-${now()}`, timestampMs: now() };
+    }
+    return this.messagingService.sendText(this.requireApi(), input);
   }
 
-  public async sendE2EEText(threadId: string, text: string, replyToMessageId?: string): Promise<E2EESendMessageResult> {
+  public async sendE2EEText(threadId: string, text: string, replyToMessageId?: string): Promise<void> {
     if (!this.e2eeSocket) throw new Error("E2EE not connected");
     const e2eeClient = this.e2eeService.getClient();
     const selfJid = this.getSelfE2EEJid();
     const toJid = normalizeDMThreadToJid(threadId);
     const messageId = String(BigInt(Math.floor(Math.random() * 1e15)));
-    const timestampMs = now();
 
     const result = await e2eeClient.buildDMTextFanoutPayloads({
       toJid,
@@ -467,13 +499,12 @@ export class ClientController {
       messageType: "text",
       messageApp: result.messageApp,
       frankingTag: result.frankingTag,
-      createdAtMs: timestampMs,
+      createdAtMs: now(),
     });
     logger.info("ClientController", `E2EE DM message sent to ${toJid} with ${participantNodes.length} devices`);
-    return { messageId, timestampMs };
   }
 
-  public async sendE2EEGroupText(groupJid: string, text: string, replyToMessageId?: string): Promise<E2EESendMessageResult> {
+  public async sendE2EEGroupText(groupJid: string, text: string, replyToMessageId?: string): Promise<void> {
     if (!this.e2eeSocket) throw new Error("E2EE not connected");
     const e2eeClient = this.e2eeService.getClient();
     const selfJid = this.getSelfE2EEJid();
@@ -488,7 +519,6 @@ export class ClientController {
     const deviceJids = uniqueJids(await this.e2eeHandler.getDeviceList(deviceUsers))
       .filter((jid) => !sameMessengerDevice(jid, selfJid));
     const messageId = String(BigInt(Math.floor(Math.random() * 1e15)));
-    const timestampMs = now();
 
     // Encrypt the main group payload
     const result = await e2eeClient.encryptGroupText(
@@ -549,10 +579,9 @@ export class ClientController {
       messageType: "text",
       messageApp: result.messageApp,
       frankingTag: result.frankingTag,
-      createdAtMs: timestampMs,
+      createdAtMs: now(),
     });
     logger.info("ClientController", `E2EE Group message sent to ${groupJid} with ${participantNodes.length} devices`);
-    return { messageId, timestampMs };
   }
 
   private getSelfE2EEJid(): string {
@@ -564,343 +593,11 @@ export class ClientController {
     return /^\d+$/.test(threadId) || threadId.includes("@msgr") || threadId.includes("@g.us") || threadId.includes(".g.");
   }
 
-  private assertE2EEReadyForThread(threadId: string, operation: string): void {
-    if (!this.isE2EEThreadId(threadId)) {
-      throw new Error(`${operation} is E2EE-only. Pass a Messenger E2EE user/group JID or numeric user ID, and use fca-unofficial directly for non-E2EE threads.`);
-    }
-    if (!this.e2eeConnected || !this.e2eeSocket) {
-      throw new Error(`${operation} requires an active E2EE connection. Call connectE2EE() before using this E2EE-only API.`);
-    }
-  }
+  public async sendReaction(input: SendReactionInput): Promise<void> { await this.messagingService.react(this.requireApi(), input); }
+  public async unsendMessage(messageId: string): Promise<void> { await this.messagingService.unsend(this.requireApi(), messageId); }
+  public async sendTyping(input: TypingInput): Promise<void> { await this.messagingService.sendTyping(this.requireApi(), input); }
+  public async markAsRead(input: MarkReadInput): Promise<void> { await this.messagingService.markAsRead(this.requireApi(), input); }
 
-  public async sendReaction(input: SendReactionInput): Promise<void> {
-    this.assertE2EEReadyForThread(input.threadId, "sendReaction");
-    await this.sendE2EEReaction(input);
-  }
-
-  public async sendE2EEReaction(input: SendReactionInput): Promise<void> {
-    if (!this.e2eeSocket) throw new Error("E2EE not connected");
-    const chatJid = this.isE2EEGroupThread(input.threadId)
-      ? input.threadId
-      : normalizeDMThreadToJid(input.threadId);
-
-    if (this.isE2EEGroupThread(chatJid)) {
-      await this.sendE2EEGroupReaction(chatJid, input);
-      return;
-    }
-
-    await this.sendE2EEDMReaction(chatJid, input);
-  }
-
-  private async sendE2EEDMReaction(toJid: string, input: SendReactionInput): Promise<void> {
-    if (!this.e2eeSocket) throw new Error("E2EE not connected");
-    const e2eeClient = this.e2eeService.getClient();
-    const selfJid = this.getSelfE2EEJid();
-    const reactionId = String(BigInt(Math.floor(Math.random() * 1e15)));
-    const keyOpts = this.buildReactionMessageKeyOptions(toJid, selfJid, input);
-    const consumerApp = e2eeClient.buildReactionMessage(input.messageId, input.reaction, keyOpts);
-    const { messageApp, frankingTag } = e2eeClient.buildMessageApplication(consumerApp);
-
-    const devicePayload = e2eeClient.buildMessageTransport({ messageApp });
-    const selfDevicePayload = e2eeClient.buildMessageTransport({
-      messageApp,
-      dsm: { destinationJid: toJid, phash: "" },
-    });
-
-    const participantNodes: Buffer[] = [];
-    const deviceJids = uniqueJids(await this.e2eeHandler.getDeviceList([toJid, toBareMessengerJid(selfJid)]));
-    if (deviceJids.length === 0) {
-      logger.warn("ClientController", `No E2EE devices discovered for ${toJid}; sending empty participant list`);
-    }
-
-    for (const deviceJid of deviceJids) {
-      if (sameMessengerDevice(deviceJid, selfJid)) continue;
-
-      try {
-        if (!(await e2eeClient.hasSession(deviceJid))) {
-          logger.info("ClientController", `Establishing new session with ${deviceJid}`);
-          const bundle = await this.e2eeHandler.getPreKeyBundle(deviceJid);
-          await e2eeClient.establishSession(deviceJid, bundle);
-        }
-
-        const payload = sameMessengerUser(deviceJid, selfJid) ? selfDevicePayload : devicePayload;
-        const encrypted = await e2eeClient.encryptDevicePayload(deviceJid, selfJid, payload);
-        participantNodes.push(encodeNode("to", { jid: deviceJid }, [
-          encodeNode("enc", { v: "3", type: encrypted.type, "decrypt-fail": "hide" }, encrypted.ciphertext),
-        ]));
-      } catch (err) {
-        logger.error("ClientController", `Failed to encrypt E2EE reaction fanout to ${deviceJid}:`, err);
-      }
-    }
-
-    const msgNode = encodeNode("message", { to: toJid, type: "reaction", id: reactionId }, [
-      encodeNode("participants", {}, participantNodes),
-      encodeNode("meta", { "decrypt-fail": "hide" }, undefined),
-      encodeNode("franking", {}, [encodeNode("franking_tag", {}, frankingTag)]),
-      encodeNode("trace", {}, [
-        encodeNode("request_id", {}, Buffer.from(randomUUID().replace(/-/g, ""), "hex")),
-      ]),
-    ]);
-
-    await this.e2eeSocket.sendFrame(marshalBinary(msgNode));
-    this.outgoingE2EECache.remember({
-      kind: "dm",
-      chatJid: toJid,
-      messageId: reactionId,
-      messageType: "reaction",
-      messageApp,
-      frankingTag,
-      createdAtMs: now(),
-    });
-    logger.info("ClientController", `E2EE reaction sent to ${toJid} for ${input.messageId}`);
-  }
-
-  private async sendE2EEGroupReaction(groupJid: string, input: SendReactionInput): Promise<void> {
-    if (!this.e2eeSocket) throw new Error("E2EE not connected");
-    const e2eeClient = this.e2eeService.getClient();
-    const selfJid = this.getSelfE2EEJid();
-    const reactionId = String(BigInt(Math.floor(Math.random() * 1e15)));
-    const keyOpts = this.buildReactionMessageKeyOptions(groupJid, selfJid, input);
-    const consumerApp = e2eeClient.buildReactionMessage(input.messageId, input.reaction, keyOpts);
-    const { messageApp, frankingTag } = e2eeClient.buildMessageApplication(consumerApp);
-    const result = await e2eeClient.encryptGroupMessageApplication(groupJid, selfJid, messageApp, reactionId);
-
-    logger.debug("ClientController", `Fetching participants for group reaction: ${groupJid}`);
-    const memberJids = await this.e2eeHandler.getGroupParticipants(groupJid);
-    const deviceUsers = uniqueJids([...memberJids, toBareMessengerJid(selfJid)]);
-    const deviceJids = uniqueJids(await this.e2eeHandler.getDeviceList(deviceUsers))
-      .filter((jid) => !sameMessengerDevice(jid, selfJid));
-
-    const participantNodes: Buffer[] = [];
-    for (const deviceJid of deviceJids) {
-      try {
-        if (!(await e2eeClient.hasSession(deviceJid))) {
-          logger.info("ClientController", `Establishing new session with ${deviceJid}`);
-          const bundle = await this.e2eeHandler.getPreKeyBundle(deviceJid);
-          await e2eeClient.establishSession(deviceJid, bundle);
-        }
-
-        const payload = sameMessengerUser(deviceJid, selfJid) ? result.selfDevicePayload : result.devicePayload;
-        const skdmEnc = await e2eeClient.encryptDevicePayload(deviceJid, selfJid, payload);
-        participantNodes.push(encodeNode("to", { jid: deviceJid }, [
-          encodeNode("enc", { v: "3", type: skdmEnc.type, "decrypt-fail": "hide" }, skdmEnc.ciphertext),
-        ]));
-      } catch (err) {
-        logger.error("ClientController", `Failed to distribute reaction SKDM to ${deviceJid}:`, err);
-      }
-    }
-
-    const phash = buildParticipantListHash(deviceJids);
-    const msgNode = encodeNode("message", { to: groupJid, type: "reaction", id: reactionId, phash }, [
-      encodeNode("participants", {}, participantNodes),
-      encodeNode("meta", { "decrypt-fail": "hide" }, undefined),
-      encodeNode("franking", {}, [encodeNode("franking_tag", {}, frankingTag)]),
-      encodeNode("trace", {}, [
-        encodeNode("request_id", {}, Buffer.from(randomUUID().replace(/-/g, ""), "hex")),
-      ]),
-      encodeNode("enc", { v: "3", type: "skmsg" }, result.groupCiphertext),
-    ]);
-
-    await this.e2eeSocket.sendFrame(marshalBinary(msgNode));
-    this.outgoingE2EECache.remember({
-      kind: "group",
-      chatJid: groupJid,
-      messageId: reactionId,
-      messageType: "reaction",
-      messageApp,
-      frankingTag,
-      createdAtMs: now(),
-    });
-    logger.info("ClientController", `E2EE group reaction sent to ${groupJid} for ${input.messageId}`);
-  }
-
-  private buildReactionMessageKeyOptions(chatJid: string, selfJid: string, input: SendReactionInput): { remoteJid: string; fromMe: boolean; participant?: string } {
-    const targetSenderJid = input.senderJid ?? input.targetSenderJid;
-    const key: { remoteJid: string; fromMe: boolean; participant?: string } = {
-      remoteJid: chatJid,
-      fromMe: true,
-    };
-
-    if (targetSenderJid && !sameMessengerUser(targetSenderJid, selfJid)) {
-      key.fromMe = false;
-      if (this.isE2EEGroupThread(chatJid)) {
-        key.participant = toBareMessengerJid(targetSenderJid);
-      }
-    }
-
-    return key;
-  }
-
-  private isE2EEGroupThread(threadId: string): boolean {
-    return threadId.includes("@g.us") || threadId.includes(".g.");
-  }
-
-  public async unsendMessage(messageId: string, threadId?: string): Promise<void> {
-    const cached = this.outgoingE2EECache.get(messageId);
-    const e2eeThreadId = threadId ?? cached?.chatJid;
-    if (!e2eeThreadId) {
-      throw new Error("unsendMessage is E2EE-only and requires threadId when the target message is not in the outbound cache.");
-    }
-
-    this.assertE2EEReadyForThread(e2eeThreadId, "unsendMessage");
-    await this.sendE2EEUnsend(e2eeThreadId, messageId);
-  }
-
-  public async sendE2EEUnsend(threadId: string, targetMessageId: string): Promise<void> {
-    if (!this.e2eeSocket) throw new Error("E2EE not connected");
-    const chatJid = this.isE2EEGroupThread(threadId)
-      ? threadId
-      : normalizeDMThreadToJid(threadId);
-
-    if (this.isE2EEGroupThread(chatJid)) {
-      await this.sendE2EEGroupUnsend(chatJid, targetMessageId);
-      return;
-    }
-
-    await this.sendE2EEDMUnsend(chatJid, targetMessageId);
-  }
-
-  private async sendE2EEDMUnsend(toJid: string, targetMessageId: string): Promise<void> {
-    if (!this.e2eeSocket) throw new Error("E2EE not connected");
-    const e2eeClient = this.e2eeService.getClient();
-    const selfJid = this.getSelfE2EEJid();
-    const revokeId = String(BigInt(Math.floor(Math.random() * 1e15)));
-    const consumerApp = e2eeClient.buildRevokeMessage(targetMessageId, { remoteJid: toJid, fromMe: true });
-    const { messageApp, frankingTag } = e2eeClient.buildMessageApplication(consumerApp);
-
-    const devicePayload = e2eeClient.buildMessageTransport({ messageApp });
-    const selfDevicePayload = e2eeClient.buildMessageTransport({
-      messageApp,
-      dsm: { destinationJid: toJid, phash: "" },
-    });
-
-    const participantNodes: Buffer[] = [];
-    const deviceJids = uniqueJids(await this.e2eeHandler.getDeviceList([toJid, toBareMessengerJid(selfJid)]));
-    if (deviceJids.length === 0) {
-      logger.warn("ClientController", `No E2EE devices discovered for ${toJid}; sending empty participant list`);
-    }
-
-    for (const deviceJid of deviceJids) {
-      if (sameMessengerDevice(deviceJid, selfJid)) continue;
-
-      try {
-        if (!(await e2eeClient.hasSession(deviceJid))) {
-          logger.info("ClientController", `Establishing new session with ${deviceJid}`);
-          const bundle = await this.e2eeHandler.getPreKeyBundle(deviceJid);
-          await e2eeClient.establishSession(deviceJid, bundle);
-        }
-
-        const payload = sameMessengerUser(deviceJid, selfJid) ? selfDevicePayload : devicePayload;
-        const encrypted = await e2eeClient.encryptDevicePayload(deviceJid, selfJid, payload);
-        participantNodes.push(encodeNode("to", { jid: deviceJid }, [
-          encodeNode("enc", { v: "3", type: encrypted.type, "decrypt-fail": "hide" }, encrypted.ciphertext),
-        ]));
-      } catch (err) {
-        logger.error("ClientController", `Failed to encrypt E2EE revoke fanout to ${deviceJid}:`, err);
-      }
-    }
-
-    const timestampMs = now();
-    const msgNode = encodeNode("message", { to: toJid, type: "text", id: revokeId, edit: E2EE_EDIT_SENDER_REVOKE }, [
-      encodeNode("participants", {}, participantNodes),
-      encodeNode("meta", { "decrypt-fail": "hide" }, undefined),
-      encodeNode("franking", {}, [encodeNode("franking_tag", {}, frankingTag)]),
-      encodeNode("trace", {}, [
-        encodeNode("request_id", {}, Buffer.from(randomUUID().replace(/-/g, ""), "hex")),
-      ]),
-    ]);
-
-    await this.e2eeSocket.sendFrame(marshalBinary(msgNode));
-    this.outgoingE2EECache.remember({
-      kind: "dm",
-      chatJid: toJid,
-      messageId: revokeId,
-      messageType: "revoke",
-      messageApp,
-      frankingTag,
-      createdAtMs: timestampMs,
-    });
-    logger.info("ClientController", `E2EE DM revoke sent to ${toJid} for ${targetMessageId}`);
-  }
-
-  private async sendE2EEGroupUnsend(groupJid: string, targetMessageId: string): Promise<void> {
-    if (!this.e2eeSocket) throw new Error("E2EE not connected");
-    const e2eeClient = this.e2eeService.getClient();
-    const selfJid = this.getSelfE2EEJid();
-    const revokeId = String(BigInt(Math.floor(Math.random() * 1e15)));
-    const consumerApp = e2eeClient.buildRevokeMessage(targetMessageId, { remoteJid: groupJid, fromMe: true });
-    const { messageApp, frankingTag } = e2eeClient.buildMessageApplication(consumerApp);
-    const result = await e2eeClient.encryptGroupMessageApplication(groupJid, selfJid, messageApp, revokeId);
-
-    logger.debug("ClientController", `Fetching participants for group revoke: ${groupJid}`);
-    const memberJids = await this.e2eeHandler.getGroupParticipants(groupJid);
-    const deviceUsers = uniqueJids([...memberJids, toBareMessengerJid(selfJid)]);
-    const deviceJids = uniqueJids(await this.e2eeHandler.getDeviceList(deviceUsers))
-      .filter((jid) => !sameMessengerDevice(jid, selfJid));
-
-    const participantNodes: Buffer[] = [];
-    for (const deviceJid of deviceJids) {
-      try {
-        if (!(await e2eeClient.hasSession(deviceJid))) {
-          logger.info("ClientController", `Establishing new session with ${deviceJid}`);
-          const bundle = await this.e2eeHandler.getPreKeyBundle(deviceJid);
-          await e2eeClient.establishSession(deviceJid, bundle);
-        }
-
-        const payload = sameMessengerUser(deviceJid, selfJid) ? result.selfDevicePayload : result.devicePayload;
-        const skdmEnc = await e2eeClient.encryptDevicePayload(deviceJid, selfJid, payload);
-        participantNodes.push(encodeNode("to", { jid: deviceJid }, [
-          encodeNode("enc", { v: "3", type: skdmEnc.type, "decrypt-fail": "hide" }, skdmEnc.ciphertext),
-        ]));
-      } catch (err) {
-        logger.error("ClientController", `Failed to distribute revoke SKDM to ${deviceJid}:`, err);
-      }
-    }
-
-    const timestampMs = now();
-    const phash = buildParticipantListHash(deviceJids);
-    const msgNode = encodeNode("message", { to: groupJid, type: "text", id: revokeId, phash, edit: E2EE_EDIT_SENDER_REVOKE }, [
-      encodeNode("participants", {}, participantNodes),
-      encodeNode("meta", { "decrypt-fail": "hide" }, undefined),
-      encodeNode("franking", {}, [encodeNode("franking_tag", {}, frankingTag)]),
-      encodeNode("trace", {}, [
-        encodeNode("request_id", {}, Buffer.from(randomUUID().replace(/-/g, ""), "hex")),
-      ]),
-      encodeNode("enc", { v: "3", type: "skmsg" }, result.groupCiphertext),
-    ]);
-
-    await this.e2eeSocket.sendFrame(marshalBinary(msgNode));
-    this.outgoingE2EECache.remember({
-      kind: "group",
-      chatJid: groupJid,
-      messageId: revokeId,
-      messageType: "revoke",
-      messageApp,
-      frankingTag,
-      createdAtMs: timestampMs,
-    });
-    logger.info("ClientController", `E2EE group revoke sent to ${groupJid} for ${targetMessageId}`);
-  }
-
-  public async sendTyping(input: TypingInput): Promise<void> {
-    this.assertE2EEReadyForThread(input.threadId, "sendTyping");
-    await this.sendE2EETyping(input);
-  }
-
-  public async sendE2EETyping(input: TypingInput): Promise<void> {
-    if (!this.e2eeSocket) throw new Error("E2EE not connected");
-    const chatJid = this.isE2EEGroupThread(input.threadId)
-      ? input.threadId
-      : normalizeDMThreadToJid(input.threadId);
-    const state = input.isTyping ? "composing" : "paused";
-    const node = encodeNode("chatstate", {
-      from: toBareMessengerJid(this.getSelfE2EEJid()),
-      to: chatJid,
-    }, [encodeNode(state, {})]);
-
-    await this.e2eeSocket.sendFrame(marshalBinary(node));
-    logger.info("ClientController", `E2EE typing ${state} sent to ${chatJid}`);
-  }
   // --- E2EE Media Upload Config ---
   private async getE2EEMediaUploadConfig(): Promise<MediaUploadConfig> {
     if (this.e2eeUploadConfig && !this.isMediaUploadConfigExpired(this.e2eeUploadConfig)) {
@@ -936,39 +633,29 @@ export class ClientController {
   }
 
   public async sendE2EEImage(input: SendMediaInput): Promise<Record<string, unknown>> {
-    return this.sendE2EEMediaDM(input, "image", (fields) => (
-      this.e2eeService.getClient().buildImageMessage({ ...fields, caption: input.caption })
-    ));
+    return this.sendE2EEMediaDM(input, "image", (fields) => this.e2eeService.getClient().buildImageMessage({ ...fields as unknown as MediaFields, caption: input.caption }));
   }
 
   public async sendE2EEVideo(input: SendMediaInput): Promise<Record<string, unknown>> {
-    return this.sendE2EEMediaDM(input, "video", (fields) => (
-      this.e2eeService.getClient().buildVideoMessage({ ...fields, caption: input.caption })
-    ));
+    return this.sendE2EEMediaDM(input, "video", (fields) => this.e2eeService.getClient().buildVideoMessage({ ...fields as unknown as MediaFields, caption: input.caption }));
   }
 
   public async sendE2EEAudio(input: SendMediaInput): Promise<Record<string, unknown>> {
-    return this.sendE2EEMediaDM(input, "audio", (fields) => (
-      this.e2eeService.getClient().buildAudioMessage(fields)
-    ));
+    return this.sendE2EEMediaDM(input, "audio", (fields) => this.e2eeService.getClient().buildAudioMessage(fields as unknown as MediaFields));
   }
 
   public async sendE2EEFile(input: SendMediaInput): Promise<Record<string, unknown>> {
-    return this.sendE2EEMediaDM(input, "document", (fields) => (
-      this.e2eeService.getClient().buildDocumentMessage({ ...fields, fileName: input.fileName })
-    ));
+    return this.sendE2EEMediaDM(input, "document", (fields) => this.e2eeService.getClient().buildDocumentMessage({ ...fields as unknown as MediaFields, fileName: input.fileName, caption: input.caption }));
   }
 
   /**
-   * Common E2EE media send for one-to-one Messenger chats.
-   * Mirrors whatsmeow's V3 node shape: message type="media" and mediatype on
-   * each encrypted participant payload so current Messenger clients render the
-   * decrypted payload as image/video/audio/document instead of broken text.
+   * Common E2EE media send for DM (fanout per-device encrypted message).
+   * All E2EE media messages use type="text" because the server cannot see the actual content.
    */
   private async sendE2EEMediaDM(
     input: SendMediaInput,
-    mediaType: E2EEDMMediaType,
-    buildMessage: (fields: MediaFields) => Buffer,
+    mediaType: MediaTypeKey,
+    buildMessage: (fields: Record<string, unknown>) => Buffer,
   ): Promise<Record<string, unknown>> {
     if (!this.e2eeSocket) throw new Error("E2EE not connected");
     if (input.threadId.includes("@g.us") || input.threadId.includes(".g.")) {
@@ -982,15 +669,14 @@ export class ClientController {
 
     const uploadConfig = await this.getE2EEMediaUploadConfig();
 
-    const defaultMime = this.getDefaultE2EEMediaMime(mediaType);
-    const mimeType = input.mimeType ?? inferMimeTypeFromFileName(input.fileName, defaultMime);
+    const defaultMime = mediaType === "image" ? "image/png" : mediaType === "video" ? "video/mp4" : mediaType === "audio" ? "audio/ogg" : "application/octet-stream";
     const media = await e2eeClient.encryptAndUploadMedia(
       uploadConfig,
       input.data,
       mediaType,
-      mimeType,
+      input.mimeType || defaultMime,
       async () => {
-        logger.info("ClientController", "Media upload 401, refreshing media_conn config...");
+        logger.info("ClientController", `Media upload 401, refreshing media_conn config...`);
         const refreshed = await this.e2eeHandler.getMediaUploadConfig();
         this.e2eeUploadConfig = refreshed;
         this.e2eeService.setProvider(this.e2eeService.getClient(), refreshed);
@@ -998,9 +684,7 @@ export class ClientController {
       },
     );
 
-    const mediaFields = this.withE2EEMediaDefaults(media.mediaFields, mediaType, input);
-    const nodeMediaType = this.getE2EENodeMediaType(mediaType, mediaFields);
-    const consumerApp = buildMessage(mediaFields);
+    const consumerApp = buildMessage(media.mediaFields);
     const { messageApp, frankingTag } = e2eeClient.buildMessageApplication(
       consumerApp,
       input.replyToMessageId ? { id: input.replyToMessageId, senderJid: toJid } : undefined,
@@ -1034,14 +718,14 @@ export class ClientController {
         const encrypted = await e2eeClient.encryptDevicePayload(deviceJid, selfJid, payload);
 
         participantNodes.push(encodeNode("to", { jid: deviceJid }, [
-          encodeNode("enc", { v: "3", type: encrypted.type, mediatype: nodeMediaType }, encrypted.ciphertext),
+          encodeNode("enc", { v: "3", type: encrypted.type }, encrypted.ciphertext),
         ]));
       } catch (err) {
         logger.error("ClientController", `Failed to encrypt E2EE ${mediaType} fanout to ${deviceJid}:`, err);
       }
     }
 
-    const msgNode = encodeNode("message", { to: toJid, type: "media", id: messageId }, [
+    const msgNode = encodeNode("message", { to: toJid, type: "text", id: messageId }, [
       encodeNode("participants", {}, participantNodes),
       encodeNode("franking", {}, [
         encodeNode("franking_tag", {}, frankingTag),
@@ -1062,73 +746,57 @@ export class ClientController {
       createdAtMs: now(),
     });
     logger.info("ClientController", `E2EE ${mediaType} sent to ${toJid} with ${participantNodes.length} devices`);
-    return {
-      messageId,
-      timestampMs: now(),
-      directPath: media.directPath,
-      handle: media.handle,
-      objectId: media.objectId,
-    };
-  }
-
-  private getDefaultE2EEMediaMime(mediaType: E2EEDMMediaType): string {
-    switch (mediaType) {
-      case "image":
-        return "image/jpeg";
-      case "video":
-        return "video/mp4";
-      case "audio":
-        return "audio/ogg; codecs=opus";
-      case "document":
-        return "application/octet-stream";
-    }
-  }
-
-  private withE2EEMediaDefaults(fields: Omit<MediaFields, "caption" | "ptt" | "fileName">, mediaType: E2EEDMMediaType, input: SendMediaInput): MediaFields {
-    const mediaFields: MediaFields = { ...fields };
-
-    if (mediaType === "image" || mediaType === "video") {
-      mediaFields.width = input.width ?? fields.width ?? 400;
-      mediaFields.height = input.height ?? fields.height ?? 400;
-    }
-    if (mediaType === "video") {
-      mediaFields.seconds = input.seconds ?? input.duration ?? fields.seconds ?? 0;
-    }
-    if (mediaType === "audio") {
-      mediaFields.seconds = input.seconds ?? input.duration ?? fields.seconds ?? 0;
-      mediaFields.ptt = input.ptt ?? true;
-    }
-    if (mediaType === "document") {
-      mediaFields.fileName = input.fileName;
-    }
-
-    return mediaFields;
-  }
-
-  private getE2EENodeMediaType(mediaType: E2EEDMMediaType, fields: MediaFields): string {
-    if (mediaType === "audio" && fields.ptt) return "ptt";
-    return mediaType;
+    return { messageId, timestampMs: now(), directPath: media.directPath };
   }
 
   public async sendImage(input: SendMediaInput): Promise<Record<string, unknown>> {
-    this.assertE2EEReadyForThread(input.threadId, "sendImage");
-    return this.sendE2EEImage(input);
+    if (this.e2eeConnected && this.isE2EEThreadId(input.threadId)) {
+      return this.sendE2EEImage(input);
+    }
+    return this.mediaService.sendImage(this.requireApi(), input);
   }
 
   public async sendVideo(input: SendMediaInput): Promise<Record<string, unknown>> {
-    this.assertE2EEReadyForThread(input.threadId, "sendVideo");
-    return this.sendE2EEVideo(input);
+    if (this.e2eeConnected && this.isE2EEThreadId(input.threadId)) {
+      return this.sendE2EEVideo(input);
+    }
+    return this.mediaService.sendVideo(this.requireApi(), input);
   }
 
   public async sendAudio(input: SendMediaInput): Promise<Record<string, unknown>> {
-    this.assertE2EEReadyForThread(input.threadId, "sendAudio");
-    return this.sendE2EEAudio(input);
+    if (this.e2eeConnected && this.isE2EEThreadId(input.threadId)) {
+      return this.sendE2EEAudio(input);
+    }
+    return this.mediaService.sendAudio(this.requireApi(), input);
   }
 
   public async sendFile(input: SendMediaInput): Promise<Record<string, unknown>> {
-    this.assertE2EEReadyForThread(input.threadId, "sendFile");
-    return this.sendE2EEFile(input);
+    if (this.e2eeConnected && this.isE2EEThreadId(input.threadId)) {
+      return this.sendE2EEFile(input);
+    }
+    return this.mediaService.sendFile(this.requireApi(), input);
   }
+  public async sendSticker(input: SendStickerInput) { return this.mediaService.sendSticker(this.requireApi(), input); }
+  public async downloadMedia(input: DownloadMediaInput) { return this.mediaService.downloadMedia(input); }
+
+  public async muteThread(input: MuteThreadInput) { await this.mediaService.muteThread(this.requireApi(), input); }
+  public async renameThread(input: RenameThreadInput) { await this.mediaService.renameThread(this.requireApi(), input); }
+  public async setGroupPhoto(input: SetGroupPhotoInput) { await this.mediaService.setGroupPhoto(this.requireApi(), input); }
+  public async deleteThread(input: DeleteThreadInput) { await this.mediaService.deleteThread(this.requireApi(), input); }
+  public async createThread(input: CreateThreadInput) { return this.mediaService.createThread(this.requireApi(), input); }
+
+  public async searchUsers(input: SearchUsersInput) { return this.mediaService.searchUsers(this.requireApi(), input); }
+  public async getUserInfo(input: GetUserInfoInput) { return this.mediaService.getUserInfo(this.requireApi(), input); }
+
+  public async getThreadList(input: GetThreadListInput) { return this.threadService.getThreadList(this.requireApi(), input); }
+  public async getThreadHistory(input: GetThreadHistoryInput) { return this.threadService.getThreadHistory(this.requireApi(), input); }
+  public async forwardAttachment(input: ForwardAttachmentInput) { await this.threadService.forwardAttachment(this.requireApi(), input); }
+  public async createPoll(input: CreatePollInput) { await this.threadService.createPoll(this.requireApi(), input); }
+  public async editMessage(input: EditMessageInput) { return this.threadService.editMessage(this.requireApi(), input); }
+  public async addGroupMember(input: AddGroupMemberInput) { await this.threadService.addGroupMember(this.requireApi(), input); }
+  public async removeGroupMember(input: RemoveGroupMemberInput) { await this.threadService.removeGroupMember(this.requireApi(), input); }
+  public async changeAdminStatus(input: ChangeAdminStatusInput) { await this.threadService.changeAdminStatus(this.requireApi(), input); }
+  public async getFriendsList() { return this.threadService.getFriendsList(this.requireApi()); }
 
   private requireApi(): FCAApi {
     if (!this.api) throw new Error("Client is not connected");

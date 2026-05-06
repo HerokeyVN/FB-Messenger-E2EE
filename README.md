@@ -1,8 +1,11 @@
 # FME - FB Messenger E2EE
 
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.0+-blue.svg)](https://www.typescriptlang.org/)
-[![Bun](https://img.shields.io/badge/Bun-1.0+-black.svg)](https://bun.sh/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![npm version](https://img.shields.io/npm/v/fb-messenger-e2ee?style=flat-square)](https://www.npmjs.com/package/fb-messenger-e2ee)
+[![github version](https://img.shields.io/github/package-json/v/HerokeyVN/fb-messenger-e2ee?label=github&style=flat-square)](https://github.com/HerokeyVN/fb-messenger-e2ee)
+[![npm downloads](https://img.shields.io/npm/dm/fb-messenger-e2ee?style=flat-square)](https://www.npmjs.com/package/fb-messenger-e2ee)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.0+-blue?style=flat-square)](https://www.typescriptlang.org/)
+[![Bun](https://img.shields.io/badge/Bun-1.0+-black?style=flat-square)](https://bun.sh/)
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue?style=flat-square)](https://www.gnu.org/licenses/agpl-3.0)
 
 **FME - FB Messenger E2EE** is a TypeScript/Bun toolkit focused on Facebook Messenger E2EE flows built on Noise, WA-binary, protobuf, and the Signal Protocol. Plaintext/non-E2EE messaging is intentionally left to `fca-unofficial` directly.
 
@@ -150,4 +153,4 @@ For the API reference and operational notes, see [DOCS.md](./DOCS.md).
 
 ## License
 
-MIT © [VangBanLaNhat](https://github.com/VangBanLaNhat)
+Licensed under the [GNU Affero General Public License v3.0](./LICENSE)

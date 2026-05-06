@@ -28,7 +28,7 @@
 - **Language**: [TypeScript](https://www.typescriptlang.org/)
 - **Encryption**: [@signalapp/libsignal-client](https://github.com/signalapp/libsignal-client)
 - **Protocol**: ProtobufJS + manual WA-binary/protobuf encoders
-- **Auth bootstrap bridge**: [fca-unofficial](https://github.com/VangBanLaNhat/fca-unofficial) is used internally only for appState login/CAT bootstrap; use it directly for non-E2EE messaging.
+- **Auth bootstrap bridge**: [fca-unofficial](https://github.com/VangBanLaNhat/fca-unofficial) is used internally only for appState login/CAT bootstrap
 
 ---
 

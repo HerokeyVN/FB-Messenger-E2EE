@@ -44,6 +44,18 @@ bun add fb-messenger-e2ee
 
 ### 2. Basic Usage
 
+
+#### ESM (TypeScript / Modern Node.js)
+```typescript
+import { FBClient } from "fb-messenger-e2ee";
+```
+
+#### CommonJS (Legacy Node.js)
+```javascript
+const { FBClient } = require("fb-messenger-e2ee");
+```
+
+#### Example
 ```typescript
 import { FBClient } from "fb-messenger-e2ee";
 
@@ -130,10 +142,23 @@ src/
 
 ---
 
-## Testing
+## Build & Development
 
+### Build
+Generate ESM and CommonJS bundles in the `dist/` directory:
+```bash
+npm run build
+# or
+bun run build
+```
+
+### Type Check
 ```bash
 npm run typecheck
+```
+
+### Testing
+```bash
 npm test -- --runInBand
 ```
 

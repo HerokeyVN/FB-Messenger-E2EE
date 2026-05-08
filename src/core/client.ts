@@ -13,7 +13,9 @@ import { AuthService } from "../services/auth.service.ts";
 import { E2EEService } from "../services/e2ee.service.ts";
 import { FacebookGatewayService } from "../services/facebook-gateway.service.ts";
 import { MediaService } from "../services/media.service.ts";
+import { MessagingService } from "../services/messaging.service.ts";
 import { ICDCService } from "../services/icdc.service.ts";
+import { ThreadService } from "../services/thread.service.ts";
 
 /**
  * E2EE-only Messenger client facade.
@@ -32,6 +34,8 @@ export class FBClient {
     const authService = new AuthService(sessionRepository);
     const gateway = new FacebookGatewayService();
     const mediaService = new MediaService(gateway);
+    const messagingService = new MessagingService(gateway);
+    const threadService = new ThreadService(mediaService);
     const e2eeService = new E2EEService();
 
     const icdcService = new ICDCService(
@@ -40,7 +44,9 @@ export class FBClient {
     this.controller = new ClientController(
       authService,
       gateway,
+      messagingService,
       mediaService,
+      threadService,
       e2eeService,
       icdcService,
       this.eventBus as any,
@@ -123,8 +129,8 @@ export class FBClient {
     await this.controller.sendReaction(input);
   }
 
-  public async unsendMessage(messageId: string, threadId?: string): Promise<void> {
-    await this.controller.unsendMessage(messageId, threadId);
+  public async unsendMessage(messageId: string): Promise<void> {
+    await this.controller.unsendMessage(messageId);
   }
 
   public async sendTyping(input: TypingInput): Promise<void> {

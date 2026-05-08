@@ -15,7 +15,6 @@
   },
   "scripts": {
     "build": "tsup",
-    "prepare": "bun run build",
     "dev": "bun run examples/basic-usage.ts",
     "start": "bun run examples/basic-usage.ts",
     "typecheck": "tsc --noEmit",

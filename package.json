@@ -2,13 +2,20 @@
   "name": "fb-messenger-e2ee",
   "version": "0.1.1",
   "description": "E2EE-only TypeScript/Bun toolkit for Facebook Messenger Noise, Signal Protocol, WA-binary, media, and DGW flows",
-  "main": "src/index.ts",
-  "module": "src/index.ts",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
   },
   "scripts": {
+    "build": "tsup",
+    "prepare": "bun run build",
     "dev": "bun run examples/basic-usage.ts",
     "start": "bun run examples/basic-usage.ts",
     "typecheck": "tsc --noEmit",
@@ -27,6 +34,7 @@
     "@types/ws": "^8.18.1",
     "jest": "^30.3.0",
     "ts-jest": "^29.4.9",
+    "tsup": "^8.5.1",
     "typescript": "^5.8.3"
   },
   "trustedDependencies": [

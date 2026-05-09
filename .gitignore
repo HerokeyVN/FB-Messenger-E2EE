@@ -5,6 +5,7 @@ node_modules
 dist
 out
 *.tgz
+proto
 
 # code coverage
 coverage

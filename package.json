@@ -1,6 +1,6 @@
 {
   "name": "fb-messenger-e2ee",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "E2EE-only TypeScript/Bun toolkit for Facebook Messenger Noise, Signal Protocol, WA-binary, media, and DGW flows",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",

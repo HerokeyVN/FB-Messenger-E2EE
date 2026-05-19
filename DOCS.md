@@ -217,6 +217,47 @@ await client.sendImage({
 });
 ```
 
+### `sendFiles`
+
+Sends multiple files/attachments in a single call.
+
+- **Non-E2EE threads**: Bundles all files into a single Messenger message containing multiple attachments.
+- **E2EE threads**: Since the Messenger E2EE transport protocol does not support multi-attachment payloads in a single encrypted frame, the attachments are sent sequentially as separate encrypted messages. Optional fields like `caption` and `replyToMessageId` are only applied to the first attachment.
+
+Returns either a single result object (for non-E2EE) or an array of result objects (one per attachment for E2EE).
+
+```typescript
+await client.sendFiles({
+  threadId: "1234567890.0@msgr",
+  caption: "Here are some files",
+  attachments: [
+    { data: imageBuffer, fileName: "photo.jpg" },
+    { data: pdfBuffer, fileName: "document.pdf" }
+  ]
+});
+```
+
+**SendMultipleMediaInput**
+
+| Field | Type | Description |
+|---|---|---|
+| `threadId` | `string` | The target thread identifier. |
+| `attachments` | `SendAttachmentItem[]` | An array of attachment objects to send. |
+| `caption` | `string` | Optional caption. Applied to the bundled message for non-E2EE, or to the first attachment for E2EE. |
+| `replyToMessageId` | `string` | Optional message ID to reply to. |
+
+**SendAttachmentItem**
+
+| Field | Type | Description |
+|---|---|---|
+| `data` | `Buffer` | The raw file bytes. |
+| `fileName` | `string` | The filename. |
+| `mimeType` | `string` | Optional MIME type (inferred from filename extension if omitted). |
+| `width` | `number` | Optional width in pixels (for E2EE images/videos). |
+| `height` | `number` | Optional height in pixels (for E2EE images/videos). |
+| `seconds` | `number` | Optional duration in seconds (for E2EE videos/audios). |
+| `ptt` | `boolean` | Optional flag indicating if audio should be sent as voice note (push-to-talk). |
+
 ---
 
 ## Event Handling

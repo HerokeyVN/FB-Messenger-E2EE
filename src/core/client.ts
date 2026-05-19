@@ -1,8 +1,10 @@
 import type { MessengerEvent } from "../models/domain.ts";
 import type {
   E2EEEditMessageInput,
+  SendAttachmentItem,
   SendMediaInput,
   SendMessageInput,
+  SendMultipleMediaInput,
   SendReactionInput,
   TypingInput,
   UnsendMessageInput,
@@ -159,5 +161,19 @@ export class FBClient {
 
   public async sendFile(input: SendMediaInput): Promise<Record<string, unknown>> {
     return this.controller.sendFile(input);
+  }
+
+  /**
+   * Send multiple files/attachments in one call.
+   *
+   * - **Non-E2EE threads**: All attachments land in a single Messenger message.
+   * - **E2EE threads**: Each attachment is sent as a separate encrypted message
+   *   (E2EE does not support multi-attachment in one frame). Returns an array
+   *   with one result per attachment.
+   */
+  public async sendFiles(
+    input: SendMultipleMediaInput,
+  ): Promise<Record<string, unknown> | Record<string, unknown>[]> {
+    return this.controller.sendFiles(input);
   }
 }

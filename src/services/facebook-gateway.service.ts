@@ -102,6 +102,42 @@ export class FacebookGatewayService {
     return (response ?? {}) as Record<string, unknown>;
   }
 
+  /**
+   * Send multiple attachments in a single FCA message.
+   * FCA-unofficial accepts an array in `attachment` field, which bundles all
+   * files into one Messenger message on the wire.
+   */
+  public async sendMultipleAttachmentsMessage(
+    api: FCAApi,
+    input: {
+      threadId: string;
+      attachments: Array<{ data: Buffer; fileName: string }>;
+      caption?: string;
+      replyToMessageId?: string;
+    },
+  ): Promise<Record<string, unknown>> {
+    if (input.attachments.length === 0) {
+      throw new Error("sendMultipleAttachmentsMessage requires at least one attachment");
+    }
+
+    const streams = input.attachments.map(({ data, fileName }) => {
+      const stream = Readable.from(data);
+      Object.assign(stream, { path: fileName });
+      return stream;
+    });
+
+    const payload = {
+      body: input.caption ?? "",
+      // FCA-unofficial accepts a single Readable or an array of Readables
+      attachment: streams.length === 1 ? streams[0] : streams,
+    };
+
+    const response = await Promise.resolve(
+      api.sendMessage(payload, input.threadId, undefined, input.replyToMessageId),
+    );
+    return (response ?? {}) as Record<string, unknown>;
+  }
+
   public async sendReaction(
     api: FCAApi,
     messageId: string,

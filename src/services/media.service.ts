@@ -84,6 +84,22 @@ export class MediaService {
     });
   }
 
+  /**
+   * Send multiple attachments bundled into a single FCA message.
+   * Non-E2EE only — for E2EE threads use the controller which sends them sequentially.
+   */
+  public async sendFiles(
+    api: FCAApi,
+    input: {
+      threadId: string;
+      attachments: Array<{ data: Buffer; fileName: string }>;
+      caption?: string;
+      replyToMessageId?: string;
+    },
+  ): Promise<Record<string, unknown>> {
+    return this.gateway.sendMultipleAttachmentsMessage(api, input);
+  }
+
   public async sendSticker(
     api: FCAApi,
     input: SendStickerInput,

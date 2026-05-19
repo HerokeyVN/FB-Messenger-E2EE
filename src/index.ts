@@ -15,6 +15,8 @@ export type {
 export type {
   SendMessageInput,
   SendMediaInput,
+  SendAttachmentItem,
+  SendMultipleMediaInput,
   SendReactionInput,
   UnsendMessageInput,
   E2EEEditMessageInput,

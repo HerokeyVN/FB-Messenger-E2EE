@@ -24,6 +24,39 @@ export interface SendMediaInput {
   ptt?: boolean;
 }
 
+/** A single attachment item inside a multi-attachment message. */
+export interface SendAttachmentItem {
+  data: Buffer;
+  fileName: string;
+  /** Optional MIME type; inferred from fileName extension when omitted. */
+  mimeType?: string;
+  /** Optional width/height for image or video payloads. */
+  width?: number;
+  height?: number;
+  /** Optional duration in seconds for video/audio payloads. */
+  seconds?: number;
+  /** Whether audio should be sent as push-to-talk/voice. */
+  ptt?: boolean;
+}
+
+/**
+ * Send multiple attachments in a single Messenger message.
+ *
+ * - **Non-E2EE threads**: All attachments are bundled into one FCA message,
+ *   delivered as a multi-attachment post.
+ * - **E2EE threads**: Each attachment is sent as a separate encrypted E2EE
+ *   media message (the protocol does not support multi-attachment in one
+ *   encrypted frame), so `results` will contain one entry per attachment.
+ */
+export interface SendMultipleMediaInput {
+  threadId: string;
+  /** Array of file attachments to send. At least one entry is required. */
+  attachments: SendAttachmentItem[];
+  /** Optional caption applied to the first attachment (or to the bundled non-E2EE message). */
+  caption?: string;
+  replyToMessageId?: string;
+}
+
 export interface SendStickerInput {
   threadId: string;
   stickerId: number;

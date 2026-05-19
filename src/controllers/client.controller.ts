@@ -28,8 +28,10 @@ import type {
   MuteThreadInput,
   RenameThreadInput,
   SearchUsersInput,
+  SendAttachmentItem,
   SendMediaInput,
   SendMessageInput,
+  SendMultipleMediaInput,
   SendReactionInput,
   SendStickerInput,
   SetGroupPhotoInput,
@@ -642,7 +644,7 @@ export class ClientController {
     const newMessageId = String(BigInt(Math.floor(Math.random() * 1e15)));
 
     if (isGroup) {
-      // --- Group revoke ---
+      // Group revoke
       const memberJids = await this.e2eeHandler.getGroupParticipants(threadId);
       const deviceUsers = uniqueJids([...memberJids, toBareMessengerJid(selfJid)]);
       const deviceJids = uniqueJids(await this.e2eeHandler.getDeviceList(deviceUsers))
@@ -681,7 +683,7 @@ export class ClientController {
       await this.e2eeSocket.sendFrame(marshalBinary(msgNode));
       logger.info("ClientController", `E2EE group revoke sent for message ${messageId} in ${threadId}`);
     } else {
-      // --- DM revoke ---
+      // DM revoke
       const devicePayload = e2eeClient.buildMessageTransport({ messageApp });
       const selfDevicePayload = e2eeClient.buildMessageTransport({
         messageApp,
@@ -761,7 +763,6 @@ export class ClientController {
     const newMessageId = String(BigInt(Math.floor(Math.random() * 1e15)));
 
     if (isGroup) {
-      // --- Group edit ---
       const memberJids = await this.e2eeHandler.getGroupParticipants(threadId);
       const deviceUsers = uniqueJids([...memberJids, toBareMessengerJid(selfJid)]);
       const deviceJids = uniqueJids(await this.e2eeHandler.getDeviceList(deviceUsers))
@@ -800,7 +801,6 @@ export class ClientController {
       await this.e2eeSocket.sendFrame(marshalBinary(msgNode));
       logger.info("ClientController", `E2EE group edit sent for message ${messageId} in ${threadId}`);
     } else {
-      // --- DM edit ---
       const devicePayload = e2eeClient.buildMessageTransport({ messageApp });
       const selfDevicePayload = e2eeClient.buildMessageTransport({
         messageApp,
@@ -842,7 +842,7 @@ export class ClientController {
   public async sendTyping(input: TypingInput): Promise<void> { await this.messagingService.sendTyping(this.requireApi(), input); }
   public async markAsRead(input: MarkReadInput): Promise<void> { await this.messagingService.markAsRead(this.requireApi(), input); }
 
-  // --- E2EE Media Upload Config ---
+  // E2EE Media Upload Config
   private async getE2EEMediaUploadConfig(): Promise<MediaUploadConfig> {
     if (this.e2eeUploadConfig && !this.isMediaUploadConfigExpired(this.e2eeUploadConfig)) {
       return this.e2eeUploadConfig;
@@ -868,7 +868,7 @@ export class ClientController {
   }
 
   private isMediaUploadConfigExpired(config: MediaUploadConfig): boolean {
-    // Empty auth is always invalid - never cache it
+    // Empty auth is always invalid
     if (!config.auth) return true;
     const ttlSeconds = config.authTtl ?? config.ttl;
     if (!config.fetchedAtMs || !ttlSeconds) return false;
@@ -1020,6 +1020,61 @@ export class ClientController {
     }
     return this.mediaService.sendFile(this.requireApi(), input);
   }
+
+  /**
+   * Send multiple files/attachments.
+   *
+   * - **Non-E2EE threads**: All files are bundled into a single FCA message.
+   * - **E2EE threads**: Files are sent as separate sequential encrypted E2EE
+   *   media messages (the protocol does not support multi-attachment in one
+   *   encrypted frame). Returns an array with one result per attachment.
+   */
+  public async sendFiles(
+    input: SendMultipleMediaInput,
+  ): Promise<Record<string, unknown> | Record<string, unknown>[]> {
+    if (input.attachments.length === 0) {
+      throw new Error("sendFiles requires at least one attachment");
+    }
+
+    if (this.e2eeConnected && this.isE2EEThreadId(input.threadId)) {
+      // E2EE: send each attachment as its own encrypted message
+      const results: Record<string, unknown>[] = [];
+      for (let i = 0; i < input.attachments.length; i++) {
+        const att: SendAttachmentItem = input.attachments[i]!;
+        const mediaInput: SendMediaInput = {
+          threadId: input.threadId,
+          data: att.data,
+          fileName: att.fileName,
+          mimeType: att.mimeType,
+          // Caption on first attachment only
+          caption: i === 0 ? input.caption : undefined,
+          replyToMessageId: i === 0 ? input.replyToMessageId : undefined,
+          width: att.width,
+          height: att.height,
+          seconds: att.seconds,
+          ptt: att.ptt,
+        };
+        const mediaType = inferMediaType(att.fileName, att.mimeType);
+        let result: Record<string, unknown>;
+        switch (mediaType) {
+          case "image":  result = await this.sendE2EEImage(mediaInput); break;
+          case "video":  result = await this.sendE2EEVideo(mediaInput); break;
+          case "audio":  result = await this.sendE2EEAudio(mediaInput); break;
+          default:       result = await this.sendE2EEFile(mediaInput); break;
+        }
+        results.push(result);
+      }
+      return results;
+    }
+
+    // Non-E2EE: bundle all attachments into one FCA message
+    return this.mediaService.sendFiles(this.requireApi(), {
+      threadId: input.threadId,
+      attachments: input.attachments.map(a => ({ data: a.data, fileName: a.fileName })),
+      caption: input.caption,
+      replyToMessageId: input.replyToMessageId,
+    });
+  }
   public async sendSticker(input: SendStickerInput) { return this.mediaService.sendSticker(this.requireApi(), input); }
   public async downloadMedia(input: DownloadMediaInput) { return this.mediaService.downloadMedia(input); }
 
@@ -1036,7 +1091,7 @@ export class ClientController {
   public async getThreadHistory(input: GetThreadHistoryInput) { return this.threadService.getThreadHistory(this.requireApi(), input); }
   public async forwardAttachment(input: ForwardAttachmentInput) { await this.threadService.forwardAttachment(this.requireApi(), input); }
   public async createPoll(input: CreatePollInput) { await this.threadService.createPoll(this.requireApi(), input); }
-  // editMessage is now handled by the E2EE-aware method above (routes E2EE → sendE2EEEdit, else → threadService.editMessage).
+ 
   public async addGroupMember(input: AddGroupMemberInput) { await this.threadService.addGroupMember(this.requireApi(), input); }
   public async removeGroupMember(input: RemoveGroupMemberInput) { await this.threadService.removeGroupMember(this.requireApi(), input); }
   public async changeAdminStatus(input: ChangeAdminStatusInput) { await this.threadService.changeAdminStatus(this.requireApi(), input); }
@@ -1046,4 +1101,21 @@ export class ClientController {
     if (!this.api) throw new Error("Client is not connected");
     return this.api;
   }
+}
+
+/**
+ * Infer an E2EE media type key from a file name and optional MIME type.
+ * Falls back to "document" for unknown types.
+ */
+function inferMediaType(fileName: string, mimeType?: string): "image" | "video" | "audio" | "document" {
+  const mime = (mimeType ?? "").toLowerCase();
+  if (mime.startsWith("image/")) return "image";
+  if (mime.startsWith("video/")) return "video";
+  if (mime.startsWith("audio/")) return "audio";
+
+  const ext = fileName.split(".").pop()?.toLowerCase() ?? "";
+  if (["jpg", "jpeg", "png", "gif", "webp", "heic", "heif", "bmp"].includes(ext)) return "image";
+  if (["mp4", "mov", "avi", "mkv", "webm", "3gp", "m4v"].includes(ext)) return "video";
+  if (["mp3", "ogg", "aac", "flac", "wav", "m4a", "opus"].includes(ext)) return "audio";
+  return "document";
 }

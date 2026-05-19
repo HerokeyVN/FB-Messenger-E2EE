@@ -11,7 +11,7 @@
 import { EventEmitter } from "node:events";
 import { expect, mock, test, describe, beforeEach } from "bun:test";
 
-// ---- Source under test -------------------------------------------------------
+//- Source under test----------------------------------------------------
 import type { FCAApi } from "fca-unofficial";
 import { ClientController } from "../src/controllers/client.controller.ts";
 import type { MessengerEvent, MessengerMessage } from "../src/models/domain.ts";
@@ -23,7 +23,7 @@ import { MessagingService } from "../src/services/messaging.service.ts";
 import { ThreadService } from "../src/services/thread.service.ts";
 import { ICDCService } from "../src/services/icdc.service.ts";
 
-// ---- Fixture factories -------------------------------------------------------
+//- Fixture factories----------------------------------------------------
 
 function makeFakeApi(overrides: Partial<FCAApi> = {}): FCAApi {
   return {

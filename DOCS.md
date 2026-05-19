@@ -144,13 +144,26 @@ await client.sendReaction({
 });
 ```
 
-### `unsendMessage(messageId: string, threadId?: string)`
+### `unsendMessage(input: UnsendMessageInput)`
 
-Un-sends/revokes an E2EE message you previously sent. Pass `threadId` unless the original send result is still in the short outbound cache.
+Un-sends/revokes an E2EE message you previously sent. 
+You must provide the exact `messageId`. 
+Providing the `threadId` is highly recommended to ensure the E2EE client knows the destination JID.
 
 ```typescript
-await client.unsendMessage(sent.messageId, "1234567890.0@msgr");
+await client.unsendMessage({ 
+  messageId: sent.messageId, 
+  threadId: "1234567890.0@msgr" 
+});
 ```
+
+**UnsendMessageInput**
+
+| Field | Type | Description |
+|---|---|---|
+| `messageId` | `string` | The message ID to revoke. |
+| `threadId` | `string` | Optional but highly recommended target thread identifier. |
+| `fromMe` | `boolean` | Optional flag indicating if the message was sent by you (defaults to `true`). |
 
 ### `sendTyping(input: TypingInput)`
 

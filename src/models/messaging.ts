@@ -50,6 +50,23 @@ export interface SendReactionInput {
   targetSenderJid?: string;
 }
 
+export interface UnsendMessageInput {
+  /** The message ID to revoke/unsend. */
+  messageId: string;
+  /**
+   * The thread ID (or E2EE chat JID) that contains the message.
+   * Required to route the revoke through the correct channel:
+   * - E2EE threads → encrypted revoke via Noise socket.
+   * - Non-E2EE threads → HTTP unsend via fca-unofficial.
+   */
+  threadId: string;
+  /**
+   * Whether the message was sent by the current user.
+   * Defaults to true. Set to false for admin revoke of others' messages.
+   */
+  fromMe?: boolean;
+}
+
 export interface MuteThreadInput {
   threadId: string;
   /** Seconds to mute; -1 = forever, 0 = unmute */

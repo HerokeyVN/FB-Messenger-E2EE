@@ -96,7 +96,7 @@ async function main() {
     console.log("send-e2ee-unsend", `Sent messageId=${messageId}. Waiting ${delayMs}ms before unsend...`);
 
     await sleep(delayMs);
-    await client.unsendMessage(messageId, threadId);
+    await client.unsendMessage({ messageId, threadId });
     console.log("send-e2ee-unsend", `Unsend completed for messageId=${messageId}`);
 
     await sleep(1_000);

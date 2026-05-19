@@ -16,6 +16,7 @@ export type {
   SendMessageInput,
   SendMediaInput,
   SendReactionInput,
+  UnsendMessageInput,
   TypingInput,
 } from "./models/messaging.ts";
 export type {

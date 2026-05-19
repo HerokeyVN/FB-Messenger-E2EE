@@ -33,6 +33,7 @@ import type {
   SendStickerInput,
   SetGroupPhotoInput,
   TypingInput,
+  UnsendMessageInput,
 } from "../models/messaging.ts";
 import type { AuthConfig } from "../models/config.ts";
 import { AuthService } from "../services/auth.service.ts";
@@ -426,17 +427,18 @@ export class ClientController {
     const isGroup = input.threadId.includes("@g.us") || input.threadId.includes(".g.");
 
     if (this.e2eeConnected && isE2EE) {
+      let messageId: string;
       if (isGroup) {
-        await this.sendE2EEGroupText(input.threadId, input.text, input.replyToMessageId);
+        messageId = await this.sendE2EEGroupText(input.threadId, input.text, input.replyToMessageId);
       } else {
-        await this.sendE2EEText(input.threadId, input.text, input.replyToMessageId);
+        messageId = await this.sendE2EEText(input.threadId, input.text, input.replyToMessageId);
       }
-      return { messageId: `e2ee-${now()}`, timestampMs: now() };
+      return { messageId, timestampMs: now() };
     }
     return this.messagingService.sendText(this.requireApi(), input);
   }
 
-  public async sendE2EEText(threadId: string, text: string, replyToMessageId?: string): Promise<void> {
+  public async sendE2EEText(threadId: string, text: string, replyToMessageId?: string): Promise<string> {
     if (!this.e2eeSocket) throw new Error("E2EE not connected");
     const e2eeClient = this.e2eeService.getClient();
     const selfJid = this.getSelfE2EEJid();
@@ -502,9 +504,10 @@ export class ClientController {
       createdAtMs: now(),
     });
     logger.info("ClientController", `E2EE DM message sent to ${toJid} with ${participantNodes.length} devices`);
+    return messageId;
   }
 
-  public async sendE2EEGroupText(groupJid: string, text: string, replyToMessageId?: string): Promise<void> {
+  public async sendE2EEGroupText(groupJid: string, text: string, replyToMessageId?: string): Promise<string> {
     if (!this.e2eeSocket) throw new Error("E2EE not connected");
     const e2eeClient = this.e2eeService.getClient();
     const selfJid = this.getSelfE2EEJid();
@@ -582,6 +585,7 @@ export class ClientController {
       createdAtMs: now(),
     });
     logger.info("ClientController", `E2EE Group message sent to ${groupJid} with ${participantNodes.length} devices`);
+    return messageId;
   }
 
   private getSelfE2EEJid(): string {
@@ -594,7 +598,130 @@ export class ClientController {
   }
 
   public async sendReaction(input: SendReactionInput): Promise<void> { await this.messagingService.react(this.requireApi(), input); }
-  public async unsendMessage(messageId: string): Promise<void> { await this.messagingService.unsend(this.requireApi(), messageId); }
+
+  /**
+   * Unsend/revoke a message.
+   *
+   * - **E2EE threads**: Sends an encrypted `ConsumerApplication { applicationData { revoke } }`
+   *   message over the Noise socket with `edit="sender_revoke"` (parity with whatsmeow
+   *   `getAttrsFromFBConsumerMessage`). The `fromMe` flag in the revoke key determines
+   *   whether it is a sender revoke (`true`, default) or an admin revoke (`false`).
+   * - **Non-E2EE threads**: Falls back to `fca-unofficial` HTTP unsend.
+   */
+  public async unsendMessage(input: UnsendMessageInput): Promise<void> {
+    const isE2EE = this.isE2EEThreadId(input.threadId);
+    if (this.e2eeConnected && isE2EE) {
+      await this.sendE2EERevoke(input.threadId, input.messageId, input.fromMe ?? true);
+      return;
+    }
+    await this.messagingService.unsend(this.requireApi(), input.messageId);
+  }
+
+  /**
+   * Send an E2EE revoke (unsend) for a DM or group message.
+   *
+   * Builds a `ConsumerApplication { applicationData { revoke { key { id, fromMe } } } }`
+   * payload, wraps it in MessageApplication + MessageTransport, then fans out to all
+   * participant devices exactly like a normal DM or group text — but with the
+   * `edit="sender_revoke"` attribute on the `<message>` node so the server and
+   * receiving clients apply the correct revoke semantics.
+   *
+   * Reference: whatsmeow `getAttrsFromFBConsumerMessage` (EditAttributeSenderRevoke /
+   * EditAttributeAdminRevoke) and `prepareMessageNodeV3` (attrs["edit"]).
+   */
+  private async sendE2EERevoke(threadId: string, messageId: string, fromMe: boolean): Promise<void> {
+    if (!this.e2eeSocket) throw new Error("E2EE not connected");
+    const e2eeClient = this.e2eeService.getClient();
+    const selfJid = this.getSelfE2EEJid();
+    const isGroup = threadId.includes("@g.us") || threadId.includes(".g.");
+
+    // editAttr matches whatsmeow types.EditAttributeSenderRevoke / EditAttributeAdminRevoke
+    const editAttr = fromMe ? "7" : "8";
+
+    // ConsumerApplication { applicationData { revoke { key { id, fromMe, remoteJid } } } }
+    const toJid = isGroup ? threadId : normalizeDMThreadToJid(threadId);
+    const consumerApp = e2eeClient.buildRevokeMessage(messageId, { fromMe, remoteJid: toJid });
+    const { messageApp, frankingTag } = e2eeClient.buildMessageApplication(consumerApp);
+    const newMessageId = String(BigInt(Math.floor(Math.random() * 1e15)));
+
+    if (isGroup) {
+      // --- Group revoke ---
+      const memberJids = await this.e2eeHandler.getGroupParticipants(threadId);
+      const deviceUsers = uniqueJids([...memberJids, toBareMessengerJid(selfJid)]);
+      const deviceJids = uniqueJids(await this.e2eeHandler.getDeviceList(deviceUsers))
+        .filter((jid) => !sameMessengerDevice(jid, selfJid));
+
+      const groupResult = await e2eeClient.encryptGroupMessageApplication(
+        threadId, selfJid, messageApp, newMessageId,
+      );
+
+      const participantNodes: Buffer[] = [];
+      for (const deviceJid of deviceJids) {
+        try {
+          if (!(await e2eeClient.hasSession(deviceJid))) {
+            const bundle = await this.e2eeHandler.getPreKeyBundle(deviceJid);
+            await e2eeClient.establishSession(deviceJid, bundle);
+          }
+          const payload = sameMessengerUser(deviceJid, selfJid)
+            ? groupResult.selfDevicePayload
+            : groupResult.devicePayload;
+          const skdmEnc = await e2eeClient.encryptDevicePayload(deviceJid, selfJid, payload);
+          participantNodes.push(encodeNode("to", { jid: deviceJid }, [
+            encodeNode("enc", { v: "3", type: skdmEnc.type }, skdmEnc.ciphertext),
+          ]));
+        } catch (err) {
+          logger.error("ClientController", `Failed to distribute revoke SKDM to ${deviceJid}:`, err);
+        }
+      }
+
+      const phash = buildParticipantListHash(deviceJids);
+      const msgNode = encodeNode("message", { to: threadId, type: "text", id: newMessageId, phash, edit: editAttr }, [
+        encodeNode("participants", {}, participantNodes),
+        encodeNode("franking", {}, [encodeNode("franking_tag", {}, frankingTag)]),
+        encodeNode("trace", {}, [encodeNode("request_id", {}, Buffer.from(randomUUID().replace(/-/g, ""), "hex"))]),
+        encodeNode("enc", { v: "3", type: "skmsg", "decrypt-fail": "hide" }, groupResult.groupCiphertext),
+      ]);
+      await this.e2eeSocket.sendFrame(marshalBinary(msgNode));
+      logger.info("ClientController", `E2EE group revoke sent for message ${messageId} in ${threadId}`);
+    } else {
+      // --- DM revoke ---
+      const devicePayload = e2eeClient.buildMessageTransport({ messageApp });
+      const selfDevicePayload = e2eeClient.buildMessageTransport({
+        messageApp,
+        dsm: { destinationJid: toJid, phash: "" },
+      });
+
+      const participantNodes: Buffer[] = [];
+      const deviceJids = uniqueJids(await this.e2eeHandler.getDeviceList([toJid, toBareMessengerJid(selfJid)]));
+
+      for (const deviceJid of deviceJids) {
+        if (sameMessengerDevice(deviceJid, selfJid)) continue;
+        try {
+          if (!(await e2eeClient.hasSession(deviceJid))) {
+            const bundle = await this.e2eeHandler.getPreKeyBundle(deviceJid);
+            await e2eeClient.establishSession(deviceJid, bundle);
+          }
+          const payload = sameMessengerUser(deviceJid, selfJid)
+            ? selfDevicePayload
+            : devicePayload;
+          const encrypted = await e2eeClient.encryptDevicePayload(deviceJid, selfJid, payload);
+          participantNodes.push(encodeNode("to", { jid: deviceJid }, [
+            encodeNode("enc", { v: "3", type: encrypted.type, "decrypt-fail": "hide" }, encrypted.ciphertext),
+          ]));
+        } catch (err) {
+          logger.error("ClientController", `Failed to encrypt revoke to ${deviceJid}:`, err);
+        }
+      }
+
+      const msgNode = encodeNode("message", { to: toJid, type: "text", id: newMessageId, edit: editAttr }, [
+        encodeNode("participants", {}, participantNodes),
+        encodeNode("franking", {}, [encodeNode("franking_tag", {}, frankingTag)]),
+        encodeNode("trace", {}, [encodeNode("request_id", {}, Buffer.from(randomUUID().replace(/-/g, ""), "hex"))]),
+      ]);
+      await this.e2eeSocket.sendFrame(marshalBinary(msgNode));
+      logger.info("ClientController", `E2EE DM revoke sent for message ${messageId} to ${toJid}`);
+    }
+  }
   public async sendTyping(input: TypingInput): Promise<void> { await this.messagingService.sendTyping(this.requireApi(), input); }
   public async markAsRead(input: MarkReadInput): Promise<void> { await this.messagingService.markAsRead(this.requireApi(), input); }
 

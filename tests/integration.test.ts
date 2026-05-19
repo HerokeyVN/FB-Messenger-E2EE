@@ -68,7 +68,9 @@ function makeServices() {
   const controller = new ClientController(
     authService,
     gateway,
+    messagingService,
     mediaService,
+    threadService,
     e2eeService,
     icdcService,
     eventBus,

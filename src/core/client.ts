@@ -4,6 +4,7 @@ import type {
   SendMessageInput,
   SendReactionInput,
   TypingInput,
+  UnsendMessageInput,
 } from "../models/messaging.ts";
 import type { ClientOptions, MessengerEventMap } from "../models/client.ts";
 import { TypedEventEmitter } from "../types/advanced-types.ts";
@@ -129,8 +130,8 @@ export class FBClient {
     await this.controller.sendReaction(input);
   }
 
-  public async unsendMessage(messageId: string): Promise<void> {
-    await this.controller.unsendMessage(messageId);
+  public async unsendMessage(input: UnsendMessageInput): Promise<void> {
+    await this.controller.unsendMessage(input);
   }
 
   public async sendTyping(input: TypingInput): Promise<void> {

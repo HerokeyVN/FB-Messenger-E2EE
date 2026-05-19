@@ -22,6 +22,7 @@ import type {
   CreateThreadInput,
   DeleteThreadInput,
   DownloadMediaInput,
+  E2EEEditMessageInput,
   GetUserInfoInput,
   MarkReadInput,
   MuteThreadInput,
@@ -603,8 +604,7 @@ export class ClientController {
    * Unsend/revoke a message.
    *
    * - **E2EE threads**: Sends an encrypted `ConsumerApplication { applicationData { revoke } }`
-   *   message over the Noise socket with `edit="sender_revoke"` (parity with whatsmeow
-   *   `getAttrsFromFBConsumerMessage`). The `fromMe` flag in the revoke key determines
+   *   message over the Noise socket. The `fromMe` flag in the revoke key determines
    *   whether it is a sender revoke (`true`, default) or an admin revoke (`false`).
    * - **Non-E2EE threads**: Falls back to `fca-unofficial` HTTP unsend.
    */
@@ -623,11 +623,8 @@ export class ClientController {
    * Builds a `ConsumerApplication { applicationData { revoke { key { id, fromMe } } } }`
    * payload, wraps it in MessageApplication + MessageTransport, then fans out to all
    * participant devices exactly like a normal DM or group text — but with the
-   * `edit="sender_revoke"` attribute on the `<message>` node so the server and
+   * correct edit attribute on the `<message>` node so the server and
    * receiving clients apply the correct revoke semantics.
-   *
-   * Reference: whatsmeow `getAttrsFromFBConsumerMessage` (EditAttributeSenderRevoke /
-   * EditAttributeAdminRevoke) and `prepareMessageNodeV3` (attrs["edit"]).
    */
   private async sendE2EERevoke(threadId: string, messageId: string, fromMe: boolean): Promise<void> {
     if (!this.e2eeSocket) throw new Error("E2EE not connected");
@@ -635,7 +632,7 @@ export class ClientController {
     const selfJid = this.getSelfE2EEJid();
     const isGroup = threadId.includes("@g.us") || threadId.includes(".g.");
 
-    // editAttr matches whatsmeow types.EditAttributeSenderRevoke / EditAttributeAdminRevoke
+    // Edit attribute "7" for sender revoke or "8" for admin revoke
     const editAttr = fromMe ? "7" : "8";
 
     // ConsumerApplication { applicationData { revoke { key { id, fromMe, remoteJid } } } }
@@ -722,6 +719,126 @@ export class ClientController {
       logger.info("ClientController", `E2EE DM revoke sent for message ${messageId} to ${toJid}`);
     }
   }
+
+  /**
+   * Edit an E2EE message (change its text).
+   *
+   * - **E2EE threads**: Sends an encrypted `ConsumerApplication { content { editMessage { key, message, timestampMS } } }`
+   *   payload with the edit message attribute set.
+   * - **Non-E2EE threads**: Falls back to `fca-unofficial` HTTP edit.
+   */
+  public async editMessage(input: E2EEEditMessageInput): Promise<void> {
+    const isE2EE = this.isE2EEThreadId(input.threadId);
+    if (this.e2eeConnected && isE2EE) {
+      await this.sendE2EEEdit(input.threadId, input.messageId, input.newText);
+      return;
+    }
+    // Fallback: fca-unofficial plaintext edit (non-E2EE threads)
+    await this.threadService.editMessage(this.requireApi(), {
+      messageId: input.messageId,
+      newText: input.newText,
+    });
+  }
+
+  /**
+   * Send an E2EE message edit for a DM or group message.
+   *
+   * Builds a `ConsumerApplication { payload { content { editMessage { key, message, timestampMS } } } }`
+   * payload, fanned out to all participant devices exactly like a normal message send.
+   */
+  private async sendE2EEEdit(threadId: string, messageId: string, newText: string): Promise<void> {
+    if (!this.e2eeSocket) throw new Error("E2EE not connected");
+    const e2eeClient = this.e2eeService.getClient();
+    const selfJid = this.getSelfE2EEJid();
+    const isGroup = threadId.includes("@g.us") || threadId.includes(".g.");
+
+    // Edit attribute "1" for standard message edits
+    const editAttr = "1";
+
+    const toJid = isGroup ? threadId : normalizeDMThreadToJid(threadId);
+    const consumerApp = e2eeClient.buildEditMessage(messageId, newText);
+    const { messageApp, frankingTag } = e2eeClient.buildMessageApplication(consumerApp);
+    const newMessageId = String(BigInt(Math.floor(Math.random() * 1e15)));
+
+    if (isGroup) {
+      // --- Group edit ---
+      const memberJids = await this.e2eeHandler.getGroupParticipants(threadId);
+      const deviceUsers = uniqueJids([...memberJids, toBareMessengerJid(selfJid)]);
+      const deviceJids = uniqueJids(await this.e2eeHandler.getDeviceList(deviceUsers))
+        .filter((jid) => !sameMessengerDevice(jid, selfJid));
+
+      const groupResult = await e2eeClient.encryptGroupMessageApplication(
+        threadId, selfJid, messageApp, newMessageId,
+      );
+
+      const participantNodes: Buffer[] = [];
+      for (const deviceJid of deviceJids) {
+        try {
+          if (!(await e2eeClient.hasSession(deviceJid))) {
+            const bundle = await this.e2eeHandler.getPreKeyBundle(deviceJid);
+            await e2eeClient.establishSession(deviceJid, bundle);
+          }
+          const payload = sameMessengerUser(deviceJid, selfJid)
+            ? groupResult.selfDevicePayload
+            : groupResult.devicePayload;
+          const skdmEnc = await e2eeClient.encryptDevicePayload(deviceJid, selfJid, payload);
+          participantNodes.push(encodeNode("to", { jid: deviceJid }, [
+            encodeNode("enc", { v: "3", type: skdmEnc.type }, skdmEnc.ciphertext),
+          ]));
+        } catch (err) {
+          logger.error("ClientController", `Failed to distribute edit SKDM to ${deviceJid}:`, err);
+        }
+      }
+
+      const phash = buildParticipantListHash(deviceJids);
+      const msgNode = encodeNode("message", { to: threadId, type: "text", id: newMessageId, phash, edit: editAttr }, [
+        encodeNode("participants", {}, participantNodes),
+        encodeNode("franking", {}, [encodeNode("franking_tag", {}, frankingTag)]),
+        encodeNode("trace", {}, [encodeNode("request_id", {}, Buffer.from(randomUUID().replace(/-/g, ""), "hex"))]),
+        encodeNode("enc", { v: "3", type: "skmsg", "decrypt-fail": "hide" }, groupResult.groupCiphertext),
+      ]);
+      await this.e2eeSocket.sendFrame(marshalBinary(msgNode));
+      logger.info("ClientController", `E2EE group edit sent for message ${messageId} in ${threadId}`);
+    } else {
+      // --- DM edit ---
+      const devicePayload = e2eeClient.buildMessageTransport({ messageApp });
+      const selfDevicePayload = e2eeClient.buildMessageTransport({
+        messageApp,
+        dsm: { destinationJid: toJid, phash: "" },
+      });
+
+      const participantNodes: Buffer[] = [];
+      const deviceJids = uniqueJids(await this.e2eeHandler.getDeviceList([toJid, toBareMessengerJid(selfJid)]));
+
+      for (const deviceJid of deviceJids) {
+        if (sameMessengerDevice(deviceJid, selfJid)) continue;
+        try {
+          if (!(await e2eeClient.hasSession(deviceJid))) {
+            const bundle = await this.e2eeHandler.getPreKeyBundle(deviceJid);
+            await e2eeClient.establishSession(deviceJid, bundle);
+          }
+          const payload = sameMessengerUser(deviceJid, selfJid)
+            ? selfDevicePayload
+            : devicePayload;
+          const encrypted = await e2eeClient.encryptDevicePayload(deviceJid, selfJid, payload);
+          participantNodes.push(encodeNode("to", { jid: deviceJid }, [
+            encodeNode("enc", { v: "3", type: encrypted.type, "decrypt-fail": "hide" }, encrypted.ciphertext),
+          ]));
+        } catch (err) {
+          logger.error("ClientController", `Failed to encrypt edit to ${deviceJid}:`, err);
+        }
+      }
+
+      const msgNode = encodeNode("message", { to: toJid, type: "text", id: newMessageId, edit: editAttr }, [
+        encodeNode("participants", {}, participantNodes),
+        encodeNode("franking", {}, [encodeNode("franking_tag", {}, frankingTag)]),
+        encodeNode("trace", {}, [encodeNode("request_id", {}, Buffer.from(randomUUID().replace(/-/g, ""), "hex"))]),
+      ]);
+      await this.e2eeSocket.sendFrame(marshalBinary(msgNode));
+      logger.info("ClientController", `E2EE DM edit sent for message ${messageId} to ${toJid}`);
+    }
+  }
+
   public async sendTyping(input: TypingInput): Promise<void> { await this.messagingService.sendTyping(this.requireApi(), input); }
   public async markAsRead(input: MarkReadInput): Promise<void> { await this.messagingService.markAsRead(this.requireApi(), input); }
 
@@ -919,7 +1036,7 @@ export class ClientController {
   public async getThreadHistory(input: GetThreadHistoryInput) { return this.threadService.getThreadHistory(this.requireApi(), input); }
   public async forwardAttachment(input: ForwardAttachmentInput) { await this.threadService.forwardAttachment(this.requireApi(), input); }
   public async createPoll(input: CreatePollInput) { await this.threadService.createPoll(this.requireApi(), input); }
-  public async editMessage(input: EditMessageInput) { return this.threadService.editMessage(this.requireApi(), input); }
+  // editMessage is now handled by the E2EE-aware method above (routes E2EE → sendE2EEEdit, else → threadService.editMessage).
   public async addGroupMember(input: AddGroupMemberInput) { await this.threadService.addGroupMember(this.requireApi(), input); }
   public async removeGroupMember(input: RemoveGroupMemberInput) { await this.threadService.removeGroupMember(this.requireApi(), input); }
   public async changeAdminStatus(input: ChangeAdminStatusInput) { await this.threadService.changeAdminStatus(this.requireApi(), input); }

@@ -67,6 +67,15 @@ export interface UnsendMessageInput {
   fromMe?: boolean;
 }
 
+export interface E2EEEditMessageInput {
+  /** The thread ID (or E2EE chat JID) containing the message. */
+  threadId: string;
+  /** The ID of the message to edit. */
+  messageId: string;
+  /** The new text content. */
+  newText: string;
+}
+
 export interface MuteThreadInput {
   threadId: string;
   /** Seconds to mute; -1 = forever, 0 = unmute */

@@ -165,6 +165,31 @@ await client.unsendMessage({
 | `threadId` | `string` | Optional but highly recommended target thread identifier. |
 | `fromMe` | `boolean` | Optional flag indicating if the message was sent by you (defaults to `true`). |
 
+### `editMessage(input: E2EEEditMessageInput)`
+
+Edits the text of an E2EE message you previously sent.
+You must provide the exact `messageId` (the 15-digit numeric ID returned by `sendMessage`) and the `threadId`.
+
+```typescript
+const sent = await client.sendMessage({ threadId: "1234567890.0@msgr", text: "oops" });
+const messageId = sent.messageId as string;
+
+// ... a few seconds later
+await client.editMessage({
+  threadId: "1234567890.0@msgr",
+  messageId,
+  newText: "corrected message",
+});
+```
+
+**E2EEEditMessageInput**
+
+| Field | Type | Description |
+|---|---|---|
+| `threadId` | `string` | The thread ID (E2EE chat JID) containing the message. |
+| `messageId` | `string` | The message ID to edit. |
+| `newText` | `string` | The replacement text content. |
+
 ### `sendTyping(input: TypingInput)`
 
 Sends E2EE chatstate (`composing` / `paused`) over the Noise socket.

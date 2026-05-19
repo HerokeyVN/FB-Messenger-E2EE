@@ -1,5 +1,6 @@
 import type { MessengerEvent } from "../models/domain.ts";
 import type {
+  E2EEEditMessageInput,
   SendMediaInput,
   SendMessageInput,
   SendReactionInput,
@@ -132,6 +133,10 @@ export class FBClient {
 
   public async unsendMessage(input: UnsendMessageInput): Promise<void> {
     await this.controller.unsendMessage(input);
+  }
+
+  public async editMessage(input: E2EEEditMessageInput): Promise<void> {
+    await this.controller.editMessage(input);
   }
 
   public async sendTyping(input: TypingInput): Promise<void> {

@@ -2,6 +2,13 @@ export interface SendMessageInput {
   threadId: string;
   text: string;
   replyToMessageId?: string;
+  /**
+   * JID of the original message sender for E2EE reply (QuotedMessage.participant field).
+   * - For DM: the bare JID of the peer (e.g. "123456789.0@msgr"); if omitted, defaults to the peer's JID.
+   * - For group: the full member JID who sent the original message (e.g. "123456789.160@msgr"); required
+   *   for the server to correctly thread the reply in the group conversation.
+   */
+  replyToSenderJid?: string;
 }
 
 export interface SendMediaInput {
@@ -12,6 +19,11 @@ export interface SendMediaInput {
   mimeType?: string;
   caption?: string;
   replyToMessageId?: string;
+  /**
+   * JID of the original message sender for E2EE reply (QuotedMessage.participant field).
+   * See SendMessageInput.replyToSenderJid for details.
+   */
+  replyToSenderJid?: string;
   /** Optional media width in pixels for E2EE image/video/sticker payloads. */
   width?: number;
   /** Optional media height in pixels for E2EE image/video/sticker payloads. */

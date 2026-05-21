@@ -1,7 +1,9 @@
 import type { MediaFields } from "../../../models/e2ee.ts";
 import { ProtoWriter } from "../proto/proto-writer.ts";
+import type { ReplyToMeta } from "./message-application.ts";
 
 export type { MediaFields };
+export type { ReplyToMeta };
 
 // ConsumerApplication encoding
 
@@ -21,14 +23,14 @@ type ContentType =
 
 export class MessageBuilder {
   private content?: ContentType;
-  private replyTo?: { id: string; senderJid: string };
+  private replyTo?: ReplyToMeta;
 
-  setReply(id: string, senderJid: string): this {
-    this.replyTo = { id, senderJid };
+  setReply(replyTo: ReplyToMeta): this {
+    this.replyTo = replyTo;
     return this;
   }
 
-  getReply() {
+  getReply(): ReplyToMeta | undefined {
     return this.replyTo;
   }
 

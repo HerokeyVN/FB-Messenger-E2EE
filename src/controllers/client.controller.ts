@@ -432,16 +432,31 @@ export class ClientController {
     if (this.e2eeConnected && isE2EE) {
       let messageId: string;
       if (isGroup) {
-        messageId = await this.sendE2EEGroupText(input.threadId, input.text, input.replyToMessageId);
+        messageId = await this.sendE2EEGroupText(
+          input.threadId,
+          input.text,
+          input.replyToMessageId,
+          input.replyToSenderJid,
+        );
       } else {
-        messageId = await this.sendE2EEText(input.threadId, input.text, input.replyToMessageId);
+        messageId = await this.sendE2EEText(
+          input.threadId,
+          input.text,
+          input.replyToMessageId,
+          input.replyToSenderJid,
+        );
       }
       return { messageId, timestampMs: now() };
     }
     return this.messagingService.sendText(this.requireApi(), input);
   }
 
-  public async sendE2EEText(threadId: string, text: string, replyToMessageId?: string): Promise<string> {
+  public async sendE2EEText(
+    threadId: string,
+    text: string,
+    replyToMessageId?: string,
+    replyToSenderJid?: string,
+  ): Promise<string> {
     if (!this.e2eeSocket) throw new Error("E2EE not connected");
     const e2eeClient = this.e2eeService.getClient();
     const selfJid = this.getSelfE2EEJid();
@@ -454,7 +469,9 @@ export class ClientController {
       text,
       isGroup: false,
       replyToId: replyToMessageId,
-      replyToSenderJid: replyToMessageId ? toJid : undefined,
+      // For DM: participant = sender of original msg. If caller knows who sent it, use that;
+      // otherwise fall back to the peer's JID (correct for messages they sent to us).
+      replyToSenderJid: replyToMessageId ? (replyToSenderJid ?? toJid) : undefined,
     });
 
     const participantNodes: Buffer[] = [];
@@ -510,7 +527,12 @@ export class ClientController {
     return messageId;
   }
 
-  public async sendE2EEGroupText(groupJid: string, text: string, replyToMessageId?: string): Promise<string> {
+  public async sendE2EEGroupText(
+    groupJid: string,
+    text: string,
+    replyToMessageId?: string,
+    replyToSenderJid?: string,
+  ): Promise<string> {
     if (!this.e2eeSocket) throw new Error("E2EE not connected");
     const e2eeClient = this.e2eeService.getClient();
     const selfJid = this.getSelfE2EEJid();
@@ -533,7 +555,7 @@ export class ClientController {
       text,
       messageId,
       replyToMessageId,
-      undefined
+      replyToSenderJid,  // pass through — undefined when not replying
     );
 
     // Distribute SKDM to all devices
@@ -931,7 +953,13 @@ export class ClientController {
     const consumerApp = buildMessage(media.mediaFields);
     const { messageApp, frankingTag } = e2eeClient.buildMessageApplication(
       consumerApp,
-      input.replyToMessageId ? { id: input.replyToMessageId, senderJid: toJid } : undefined,
+      input.replyToMessageId
+        ? {
+            messageId: input.replyToMessageId,
+            chatJid: toJid,
+            senderJid: input.replyToSenderJid ?? toJid,
+          }
+        : undefined,
     );
 
     const devicePayload = e2eeClient.buildMessageTransport({ messageApp });

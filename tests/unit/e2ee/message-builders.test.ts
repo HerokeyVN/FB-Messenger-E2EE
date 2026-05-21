@@ -169,8 +169,9 @@ describe("message builders", () => {
   it("wraps consumer bytes in MessageApplication with franking metadata and quote", () => {
     const consumer = encodeTextMessage("quoted");
     const { messageApp, frankingKey, frankingTag } = encodeMessageApplication(consumer, {
-      id: "mid.quote",
-      senderJid: "100.1@msgr",
+      messageId: "mid.quote",
+      chatJid: "123456789.0@msgr",   // remoteJID: the chat/thread
+      senderJid: "100.1@msgr",        // participant: sender of the original message
     });
     const decoded = decodeMessageApplication(messageApp);
 
@@ -180,7 +181,8 @@ describe("message builders", () => {
     expect(frankingKey.length).toBe(32);
     expect(frankingTag.length).toBe(32);
     expect(decoded.metadata.quotedMessage.stanzaID).toBe("mid.quote");
-    expect(decoded.metadata.quotedMessage.remoteJID).toBe("100.1@msgr");
+    expect(decoded.metadata.quotedMessage.remoteJID).toBe("123456789.0@msgr");
+    expect(decoded.metadata.quotedMessage.participant).toBe("100.1@msgr");
   });
 
   it("encodes MessageTransport with app payload, DSM, SKDM, and backup directive", () => {

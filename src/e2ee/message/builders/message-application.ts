@@ -5,12 +5,35 @@ import { ProtoWriter } from "../proto/proto-writer.ts";
 // MessageApplication encoding
 
 /**
+ * Reply-to (quoted message) metadata for MessageApplication.Metadata.QuotedMessage.
+ *
+ * Proto schema (WAMsgApplication.proto):
+ *   message QuotedMessage {
+ *     optional string stanzaID   = 1;  // message ID of the quoted message
+ *     optional string remoteJID  = 2;  // chat JID (thread) that contains the quoted message
+ *     optional string participant = 3; // sender JID of the quoted message (required for groups)
+ *   }
+ */
+export interface ReplyToMeta {
+  /** Message ID (stanzaID) of the quoted message. */
+  messageId: string;
+  /** Chat JID (remoteJID) — the thread where the quoted message lives. */
+  chatJid: string;
+  /**
+   * Sender JID (participant) of the quoted message.
+   * - For DM: same as chatJid (the peer's bare JID).
+   * - For group: the specific member JID who sent the original message.
+   */
+  senderJid: string;
+}
+
+/**
  * Wrap a ConsumerApplication payload into a MessageApplication.
  * Returns (messageApp bytes, frankingKey, frankingTag).
  */
 export function encodeMessageApplication(
   consumerAppBytes: Buffer,
-  replyTo?: { id: string; senderJid: string }
+  replyTo?: ReplyToMeta
 ): {
   messageApp: Buffer;
   frankingKey: Buffer;
@@ -42,9 +65,15 @@ export function encodeMessageApplication(
     .varint(9, 0); // frankingVersion
 
   if (replyTo) {
+    // QuotedMessage {
+    //   stanzaID   = field 1 (message ID of the quoted message)
+    //   remoteJID  = field 2 (JID of the chat/thread, NOT the sender)
+    //   participant = field 3 (JID of the original sender; same as remoteJID for DM)
+    // }
     const quoted = new ProtoWriter()
-      .string(1, replyTo.id)
-      .string(2, replyTo.senderJid)
+      .string(1, replyTo.messageId)
+      .string(2, replyTo.chatJid)
+      .string(3, replyTo.senderJid)
       .build();
     metadataWriter = metadataWriter.bytes(10, quoted);
   }

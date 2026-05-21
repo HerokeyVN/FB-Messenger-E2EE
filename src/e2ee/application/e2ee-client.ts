@@ -56,10 +56,14 @@ import {
   encodeEditMessage,
   encodeRevokeMessage,
 } from "../message/message-builder.ts";
+import type { ReplyToMeta } from "../message/builders/message-application.ts";
 import type { RawPreKeyBundle } from "../../models/e2ee.ts";
 import type { MediaUploadConfig, MmsTypeStr } from "../../models/media.ts";
 import { uploadMedia } from "../media/media-upload.ts";
 import { MmsType } from "../media/media-crypto.ts";
+
+// Re-export ReplyToMeta for callers
+export type { ReplyToMeta };
 
 // Types
 
@@ -102,7 +106,16 @@ export class E2EEClient {
   async buildDMTextFanoutPayloads(opts: E2EESendTextOptions): Promise<DMTextFanoutPayloads> {
     const builder = new MessageBuilder().setText(opts.text);
     if (opts.replyToId && opts.replyToSenderJid) {
-      builder.setReply(opts.replyToId, opts.replyToSenderJid);
+      const replyTo: ReplyToMeta = {
+        messageId: opts.replyToId,
+        // chatJid = remoteJID: the thread/chat that holds the quoted message
+        // For DM, this is the peer's bare JID (toJid).
+        chatJid: opts.toJid,
+        // senderJid = participant: who sent the original message.
+        // Caller must supply the correct sender JID via replyToSenderJid.
+        senderJid: opts.replyToSenderJid,
+      };
+      builder.setReply(replyTo);
     }
     const consumerApp = builder.build();
     const { messageApp, frankingTag } = encodeMessageApplication(consumerApp, builder.getReply());
@@ -148,7 +161,14 @@ export class E2EEClient {
   ): Promise<Extract<EncryptionResult, { type: "group" }>> {
     const builder = new MessageBuilder().setText(text);
     if (replyToId && replyToSenderJid) {
-      builder.setReply(replyToId, replyToSenderJid);
+      const replyTo: ReplyToMeta = {
+        messageId: replyToId,
+        // chatJid = remoteJID: for a group message, this is the group JID
+        chatJid: groupJid,
+        // participant: the specific member who sent the original message
+        senderJid: replyToSenderJid,
+      };
+      builder.setReply(replyTo);
     }
     const consumerApp = builder.build();
     const { messageApp, frankingTag } = encodeMessageApplication(consumerApp, builder.getReply());

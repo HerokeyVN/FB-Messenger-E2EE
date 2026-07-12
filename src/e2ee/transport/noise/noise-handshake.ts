@@ -232,6 +232,9 @@ class EncryptedFrameSocket implements NoiseSocket {
     logger.debug("FacebookE2EESocket", `RAW frame header: ${header.toString('hex')} (len=${len})`);
 
     const payload = await this.ws.readRaw(len);
+    if (!payload) {
+      throw new Error("Socket closed while reading frame payload");
+    }
     try {
       const decrypted = this.decryptFrame(payload);
       logger.debug("FacebookE2EESocket", `Decrypt successful, result length: ${decrypted.length}`);

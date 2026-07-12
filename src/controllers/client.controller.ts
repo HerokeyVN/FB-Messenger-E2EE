@@ -283,7 +283,15 @@ export class ClientController {
       }
     });
 
-    await noiseSocket.connect(ds.noiseKeyPriv, clientPayload);
+    // Build cookie header from FCA session — required for server to accept the WebSocket upgrade.
+    // Without cookies the server returns HTTP 415 (Unsupported Media Type / Unauthorized).
+    const api = this.requireApi();
+    const appState: any[] = (api as any).getAppState?.() || [];
+    const cookieStr = appState.map((c: any) => `${c.key}=${c.value}`).join("; ");
+    logger.info("ClientController", "FCA appState length:", appState.length);
+    logger.info("ClientController", "Cookie string snippet:", cookieStr.substring(0, 100));
+
+    await noiseSocket.connect(ds.noiseKeyPriv, clientPayload, cookieStr || undefined);
     this.e2eeSocket = noiseSocket;
 
     // Wait for success

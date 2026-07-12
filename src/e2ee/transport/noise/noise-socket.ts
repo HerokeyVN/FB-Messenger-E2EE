@@ -11,32 +11,40 @@ export class FacebookE2EESocket extends EventEmitter {
   private url: string;
   private heartbeatInterval: any = null;
   private isConnected: boolean = false;
+  private cookieHeader: string = "";
 
   constructor(endpoint: string) {
     super();
     this.url = endpoint;
   }
 
-  public async connect(noisePrivKey: Buffer, authPayload: Buffer): Promise<void> {
+  public async connect(noisePrivKey: Buffer, authPayload: Buffer, cookies?: string): Promise<void> {
     return new Promise((resolve, reject) => {
       try {
+        if (cookies) this.cookieHeader = cookies;
         const wsUrl = new URL(this.url);
         // Add chat specific query params if needed
         wsUrl.searchParams.set("cid", "client-" + Date.now());
 
         const UserAgentStr = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36";
 
+        const wsHeaders: Record<string, string> = {
+          "Origin": "https://www.facebook.com",
+          "User-Agent": UserAgentStr,
+        };
+        if (this.cookieHeader) {
+          wsHeaders["Cookie"] = this.cookieHeader;
+        }
+
         this.ws = new (WebSocket as any)(wsUrl.toString(), undefined, {
-          headers: {
-            "Origin": "https://www.facebook.com",
-            "User-Agent": UserAgentStr,
-          }
+          headers: wsHeaders,
         });
         this.ws!.binaryType = "arraybuffer";
 
         let handshakeResolved = false;
         let streamBuffer: Buffer[] = [];
         let streamLen = 0;
+        let waitingRejectFn: ((err: Error) => void) | null = null;
         let waitingResolver: ((data: Buffer) => void) | null = null;
         let waitingLen: number = 0;
 
@@ -85,8 +93,9 @@ export class FacebookE2EESocket extends EventEmitter {
             const targetLen = len || 0;
             if (targetLen === 0) {
               if (streamLen > 0) return Promise.resolve(readFromBuffer(streamLen));
-              return new Promise((resolve) => {
+              return new Promise((resolve, reject) => {
                 waitingLen = 1;
+                waitingRejectFn = reject;
                 waitingResolver = () => resolve(readFromBuffer(streamLen));
               });
             }
@@ -96,8 +105,9 @@ export class FacebookE2EESocket extends EventEmitter {
             if (this.ws?.readyState !== WebSocket.OPEN) {
               return Promise.reject(new Error("WebSocket not open"));
             }
-            return new Promise((resolve) => {
+            return new Promise((resolve, reject) => {
               waitingLen = targetLen;
+              waitingRejectFn = reject;
               waitingResolver = resolve;
             });
           },
@@ -107,10 +117,13 @@ export class FacebookE2EESocket extends EventEmitter {
         this.ws!.addEventListener("close", () => {
           this.isConnected = false;
           this.stopHeartbeat();
-          if (waitingResolver) {
-            waitingResolver(null as any);
-            waitingResolver = null;
+          if (waitingRejectFn) {
+            // Reject the pending readRaw() promise so the read loop throws
+            // instead of receiving null and crashing in decryptFrame.
+            waitingRejectFn(new Error("WebSocket closed while waiting for data"));
+            waitingRejectFn = null;
           }
+          waitingResolver = null;
           this.emit("disconnected");
         });
 

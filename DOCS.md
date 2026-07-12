@@ -18,8 +18,8 @@ new FBClient(options: ClientOptions)
 
 | Option | Type | Description |
 |---|---|---|
-| `appStatePath` | `string` | Path to Facebook appState/cookies JSON. |
-| `appState` | `any[] \| string` | Optional in-memory appState alternative. |
+| `appStatePath` | `string` | Path to Facebook appState JSON (contains the active login cookies/session data). |
+| `appState` | `any[] \| string` | Optional in-memory appState/cookies alternative (cookies string or array). |
 | `sessionStorePath` | `string` | Optional path for login/session metadata used by E2EE bootstrap. |
 | `platform` | `"facebook" \| "messenger"` | Login platform hint. Defaults to `"facebook"`. |
 

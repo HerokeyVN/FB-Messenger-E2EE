@@ -28,7 +28,7 @@
 - **Language**: [TypeScript](https://www.typescriptlang.org/)
 - **Encryption**: [@signalapp/libsignal-client](https://github.com/signalapp/libsignal-client)
 - **Protocol**: ProtobufJS + manual WA-binary/protobuf encoders
-- **Auth bootstrap bridge**: [fca-unofficial](https://github.com/VangBanLaNhat/fca-unofficial) is used internally only for appState login/CAT bootstrap
+- **Auth bootstrap bridge**: [fca-unofficial](https://github.com/VangBanLaNhat/fca-unofficial) is used internally only for appState login/CAT bootstrap (where appState represents the active Facebook login cookies)
 
 ---
 
@@ -60,7 +60,7 @@ const { FBClient } = require("fb-messenger-e2ee");
 import { FBClient } from "fb-messenger-e2ee";
 
 const client = new FBClient({
-  appStatePath: "./appstate.json",
+  appStatePath: "./appstate.json", // Path to Facebook appState JSON (contains active login cookies/session data)
   sessionStorePath: "./session.json",
   platform: "facebook",
 });

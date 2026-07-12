@@ -1,12 +1,13 @@
 import { EventEmitter } from "node:events";
 import { appendFileSync } from "node:fs";
+import NodeWebSocket from "ws";
 import { doHandshake } from "./noise-handshake.ts";
 import type { NoiseSocket, RawWebSocket } from "../../../models/e2ee.ts";
-import { encodeKeepAlive, unmarshal } from "../binary/wa-binary.ts";
+import { unmarshal } from "../binary/wa-binary.ts";
 import { logger } from "../../../utils/logger.ts";
 
 export class FacebookE2EESocket extends EventEmitter {
-  private ws: WebSocket | null = null;
+  private ws: NodeWebSocket | null = null;
   private noiseSocket: NoiseSocket | null = null;
   private url: string;
   private heartbeatInterval: any = null;
@@ -36,10 +37,11 @@ export class FacebookE2EESocket extends EventEmitter {
           wsHeaders["Cookie"] = this.cookieHeader;
         }
 
-        this.ws = new (WebSocket as any)(wsUrl.toString(), undefined, {
+        this.ws = new NodeWebSocket(wsUrl.toString(), {
           headers: wsHeaders,
+          perMessageDeflate: true,
         });
-        this.ws!.binaryType = "arraybuffer";
+        (this.ws as any).binaryType = "arraybuffer";
 
         let handshakeResolved = false;
         let streamBuffer: Buffer[] = [];
@@ -48,8 +50,8 @@ export class FacebookE2EESocket extends EventEmitter {
         let waitingResolver: ((data: Buffer) => void) | null = null;
         let waitingLen: number = 0;
 
-        this.ws!.addEventListener("message", (ev) => {
-          const frame = Buffer.from(ev.data as ArrayBuffer);
+        this.ws!.on("message", (data: any) => {
+          const frame = Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer);
           streamBuffer.push(frame);
           streamLen += frame.length;
           if (waitingResolver && streamLen >= waitingLen) {
@@ -85,7 +87,7 @@ export class FacebookE2EESocket extends EventEmitter {
 
         const rawWs: RawWebSocket = {
           send: (data: Buffer) => {
-            if (this.ws?.readyState === WebSocket.OPEN) {
+            if (this.ws?.readyState === NodeWebSocket.OPEN) {
               this.ws.send(data);
             }
           },
@@ -102,7 +104,7 @@ export class FacebookE2EESocket extends EventEmitter {
             if (streamLen >= targetLen) {
               return Promise.resolve(readFromBuffer(targetLen));
             }
-            if (this.ws?.readyState !== WebSocket.OPEN) {
+            if (this.ws?.readyState !== NodeWebSocket.OPEN) {
               return Promise.reject(new Error("WebSocket not open"));
             }
             return new Promise((resolve, reject) => {
@@ -114,7 +116,7 @@ export class FacebookE2EESocket extends EventEmitter {
           close: () => this.ws?.close(),
         };
 
-        this.ws!.addEventListener("close", () => {
+        this.ws!.on("close", () => {
           this.isConnected = false;
           this.stopHeartbeat();
           if (waitingRejectFn) {
@@ -127,7 +129,7 @@ export class FacebookE2EESocket extends EventEmitter {
           this.emit("disconnected");
         });
 
-        this.ws!.addEventListener("open", async () => {
+        this.ws!.on("open", async () => {
           try {
             const { socket } = await doHandshake(rawWs, noisePrivKey, authPayload);
             this.noiseSocket = socket;
@@ -143,8 +145,8 @@ export class FacebookE2EESocket extends EventEmitter {
           }
         });
 
-        this.ws!.addEventListener("error", (ev) => {
-          if (!handshakeResolved) reject(new Error("WebSocket error"));
+        this.ws!.on("error", (ev: Error) => {
+          if (!handshakeResolved) reject(new Error("WebSocket error: " + ev.message));
           this.emit("error", ev);
         });
       } catch (err) {
@@ -157,7 +159,7 @@ export class FacebookE2EESocket extends EventEmitter {
     this.stopHeartbeat();
     this.heartbeatInterval = setInterval(async () => {
       try {
-        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        if (this.ws && this.ws.readyState === NodeWebSocket.OPEN) {
           logger.debug("NoiseSocket", "Sending Noise heartbeat (0,0,0)...");
           this.ws.send(Buffer.from([0, 0, 0]));
         }

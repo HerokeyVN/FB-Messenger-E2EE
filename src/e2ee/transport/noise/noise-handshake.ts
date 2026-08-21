@@ -139,7 +139,7 @@ class NoiseHandshakeState {
       logger.error("CipherState", `  - Nonce: ${nonce.toString('hex')}`);
       logger.error("CipherState", `  - AAD: ${this.h.toString('hex')}`);
       throw err;
-    }
+    } 
   }
 
   /** Derive final send/recv keys from the completed handshake */

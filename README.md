@@ -7,7 +7,7 @@
 [![Bun](https://img.shields.io/badge/Bun-1.0+-black?style=flat-square)](https://bun.sh/)
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue?style=flat-square)](https://www.gnu.org/licenses/agpl-3.0)
 
-**FME - FB Messenger E2EE** is a TypeScript/Bun toolkit focused on Facebook Messenger E2EE flows built on Noise, WA-binary, protobuf, and the Signal Protocol. It is intentionally scoped to encrypted Messenger operations; for normal/plaintext messaging, use `fca-unofficial` directly.
+**FME - FB Messenger E2EE** is a TypeScript/Bun toolkit focused on Facebook Messenger E2EE flows built on Noise, WA-binary, protobuf, and the Signal Protocol. It is intentionally scoped to encrypted Messenger operations; for normal/plaintext messaging, use [`fca-unofficial`](https://github.com/VangBanLaNhat/fca-unofficial) directly.
 
 `fb-messenger-e2ee` handles the awkward parts of Messenger E2EE: device registration, persistent cryptographic state, Signal sessions, prekeys, sender keys, encrypted media, and binary transport over a Noise websocket.
 
